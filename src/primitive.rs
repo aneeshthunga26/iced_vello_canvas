@@ -1,12 +1,11 @@
 //! Shared Vello renderer, retained raster textures and premultiplied composition.
 use std::{collections::HashMap, sync::Mutex};
 
-use iced::{Rectangle, Size, wgpu, widget::shader};
+use iced::Size;
+use iced::{Rectangle, wgpu, widget::shader};
 use vello::kurbo::Affine;
 
-use crate::backend::Backend;
-
-use crate::{Geometry, RendererBackend};
+use crate::{Geometry, backend::Backend};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Key {
@@ -83,10 +82,7 @@ struct Surface {
 pub(crate) struct Pipeline {
     // Iced requires Sync pipelines. Preparation holds an exclusive reference.
     renderer: Mutex<Backend>,
-    #[cfg(feature = "gpu")]
-    strip_composite: wgpu::RenderPipeline,
-    #[cfg(any(feature = "compute", not(feature = "gpu")))]
-    compute_composite: wgpu::RenderPipeline,
+    composite: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     surfaces: HashMap<Owner, Surface>,
     frame: u64,
@@ -98,6 +94,7 @@ pub(crate) struct Pipeline {
 
 impl shader::Pipeline for Pipeline {
     fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+        let renderer = Backend::new(device);
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Vello canvas texture"),
             entries: &[
@@ -123,12 +120,48 @@ impl shader::Pipeline for Pipeline {
                 },
             ],
         });
+        let source = format!(
+            "const LINEAR_TARGET: bool = {};\n{}",
+            iced::advanced::graphics::color::GAMMA_CORRECTION,
+            include_str!("composite.wgsl")
+        );
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Vello canvas composite"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Vello canvas composite"),
+            bind_group_layouts: &[&layout],
+            push_constant_ranges: &[],
+        });
+        let composite = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Vello canvas composite"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vertex"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fragment"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview: None,
+            cache: None,
+        });
         Self {
-            renderer: Mutex::new(Backend::default()),
-            #[cfg(feature = "gpu")]
-            strip_composite: composite(device, format, &layout, true),
-            #[cfg(any(feature = "compute", not(feature = "gpu")))]
-            compute_composite: composite(device, format, &layout, false),
+            renderer: Mutex::new(renderer),
+            composite,
             layout,
             surfaces: HashMap::new(),
             frame: 0,
@@ -168,12 +201,6 @@ impl shader::Pipeline for Pipeline {
             }
         }
     }
-    fn after_submit(&mut self) {
-        self.renderer
-            .get_mut()
-            .expect("Vello renderer poisoned")
-            .after_submit();
-    }
 }
 
 impl shader::Primitive for Primitive {
@@ -184,25 +211,6 @@ impl shader::Primitive for Primitive {
         pipeline: &mut Pipeline,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        bounds: &Rectangle,
-        viewport: &shader::Viewport,
-    ) {
-        let mut encoder = device.create_command_encoder(&Default::default());
-        self.prepare_with_encoder(pipeline, device, queue, &mut encoder, bounds, viewport);
-        queue.submit([encoder.finish()]);
-        pipeline
-            .renderer
-            .get_mut()
-            .expect("Vello renderer poisoned")
-            .after_submit();
-    }
-
-    fn prepare_with_encoder(
-        &self,
-        pipeline: &mut Pipeline,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
         _bounds: &Rectangle,
         viewport: &shader::Viewport,
     ) {
@@ -262,9 +270,7 @@ impl shader::Primitive for Primitive {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::STORAGE_BINDING
-                    | wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
             let view = texture.create_view(&Default::default());
@@ -323,16 +329,13 @@ impl shader::Primitive for Primitive {
             .renderer
             .get_mut()
             .expect("Vello renderer poisoned")
-            .record(
+            .render(
                 device,
                 queue,
-                encoder,
-                crate::backend::Raster {
-                    layers: &self.layers,
-                    transform,
-                    view: &surface.view,
-                    size: Size::new(key.width, key.height),
-                },
+                &self.layers,
+                transform,
+                &surface.view,
+                Size::new(key.width, key.height),
             );
         surface.key = key;
         #[cfg(test)]
@@ -343,69 +346,11 @@ impl shader::Primitive for Primitive {
 
     fn draw(&self, pipeline: &Pipeline, pass: &mut wgpu::RenderPass<'_>) -> bool {
         let surface = &pipeline.surfaces[&self.owner];
-        let backend = self
-            .layers
-            .first()
-            .map_or_else(RendererBackend::default, |layer| layer.scene.backend());
-        let composite = match backend {
-            #[cfg(feature = "gpu")]
-            RendererBackend::Gpu => &pipeline.strip_composite,
-            #[cfg(any(feature = "compute", not(feature = "gpu")))]
-            RendererBackend::Compute => &pipeline.compute_composite,
-        };
-        pass.set_pipeline(composite);
+        pass.set_pipeline(&pipeline.composite);
         pass.set_bind_group(0, &surface.binding, &[]);
         pass.draw(0..6, 0..1);
         true
     }
-}
-
-fn composite(
-    device: &wgpu::Device,
-    format: wgpu::TextureFormat,
-    layout: &wgpu::BindGroupLayout,
-    premultiplied: bool,
-) -> wgpu::RenderPipeline {
-    let source = format!(
-        "const LINEAR_TARGET: bool = {};\nconst SOURCE_PREMULTIPLIED: bool = {};\n{}",
-        iced::advanced::graphics::color::GAMMA_CORRECTION,
-        premultiplied,
-        include_str!("composite.wgsl")
-    );
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("Vello canvas composite"),
-        source: wgpu::ShaderSource::Wgsl(source.into()),
-    });
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Vello canvas composite"),
-        bind_group_layouts: &[layout],
-        push_constant_ranges: &[],
-    });
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("Vello canvas composite"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: Some("vertex"),
-            compilation_options: Default::default(),
-            buffers: &[],
-        },
-        primitive: Default::default(),
-        depth_stencil: None,
-        multisample: Default::default(),
-        fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: Some("fragment"),
-            compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format,
-                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-        }),
-        multiview: None,
-        cache: None,
-    })
 }
 
 #[cfg(test)]

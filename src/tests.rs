@@ -42,7 +42,7 @@ fn gpu_clip_alpha_text_multiple_scenes_and_dpi() {
     // Match Iced's native device request, including its reduced bind-group limit.
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         required_limits: wgpu::Limits {
-            max_bind_groups: 4,
+            max_bind_groups: 2,
             max_non_sampler_bindings: 2048,
             ..Default::default()
         },
@@ -504,214 +504,6 @@ fn gpu_clip_alpha_text_multiple_scenes_and_dpi() {
     );
 }
 
-#[cfg(all(feature = "gpu", feature = "compute"))]
-#[test]
-#[ignore = "requires a compute-capable GPU; run with --include-ignored"]
-fn gpu_and_compute_geometry_share_a_frame_and_can_replace_each_other() {
-    use crate::RendererBackend;
-
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        required_limits: wgpu::Limits {
-            max_bind_groups: 4,
-            max_non_sampler_bindings: 2048,
-            ..Default::default()
-        },
-        ..Default::default()
-    }))
-    .unwrap();
-    let bounds = Rectangle::with_size(Size::new(128.0, 128.0));
-    let viewport = shader::Viewport::with_physical_size(Size::new(128, 128), 1.0);
-    let mut pipeline = Pipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-    let red = Color::from_rgba(1.0, 0.0, 0.0, 0.5);
-    let blue = Color::from_rgba(0.0, 0.0, 1.0, 0.5);
-    let compute_cache = Cache::with_backend(RendererBackend::Compute);
-    let compute = compute_cache.draw(&(), bounds.size(), |frame| {
-        frame.with_clip(Rectangle::with_size(Size::new(64.0, 128.0)), |frame| {
-            frame.fill_rectangle(Point::ORIGIN, bounds.size(), red);
-        });
-    });
-    let mut gpu = Frame::new(&(), bounds.size());
-    gpu.fill_rectangle(Point::new(64.0, 0.0), Size::new(64.0, 128.0), blue);
-    let gpu = gpu.into_geometry();
-
-    let left = Primitive::layer(0, 0, compute, bounds);
-    let right = Primitive::layer(0, 1, gpu.clone(), bounds);
-    let mut encoder = device.create_command_encoder(&Default::default());
-    for primitive in [&right, &left] {
-        primitive.prepare_with_encoder(
-            &mut pipeline,
-            &device,
-            &queue,
-            &mut encoder,
-            &bounds,
-            &viewport,
-        );
-    }
-    assert_eq!(pipeline.rasters, 2);
-    let pixels = render_recorded(&device, &queue, &pipeline, &[&left, &right], 128, encoder);
-    pipeline.after_submit();
-    assert_pixel(&pixels, 128, 32, 64, [128, 0, 0, 128]);
-    assert_pixel(&pixels, 128, 96, 64, [0, 0, 128, 128]);
-
-    let replacement = Primitive::layer(0, 0, gpu, bounds);
-    replacement.prepare(&mut pipeline, &device, &queue, &bounds, &viewport);
-    let pixels = render(&device, &queue, &pipeline, &[&replacement], 128);
-    assert_eq!(pipeline.rasters, 3);
-    assert_eq!(pipeline.allocations, 2);
-    assert_pixel(&pixels, 128, 32, 64, [0, 0, 0, 0]);
-    assert_pixel(&pixels, 128, 96, 64, [0, 0, 128, 128]);
-}
-
-#[cfg(feature = "gpu")]
-#[test]
-#[ignore = "requires a native GPU; compares cached strokes with the native path pipeline"]
-fn cached_strokes_preserve_native_pixels_during_pan_dpi_clip_and_paint_changes() {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let adapter =
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-            .unwrap();
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        required_limits: wgpu::Limits {
-            max_bind_groups: 4,
-            max_non_sampler_bindings: 2048,
-            ..Default::default()
-        },
-        ..Default::default()
-    }))
-    .unwrap();
-    let mut pipeline = Pipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-    let bounds = Rectangle::with_size(Size::new(128.0, 128.0));
-    for stroke in [false, true] {
-        for (base, rotation, sx, sy, dpi) in [
-            (0.0, 0.0, 1.0, 1.0, 1.0),
-            (50_000.0, 0.0, 1.0, 1.0, 1.0),
-            (0.0, 0.15, 0.9, 0.8, 1.0),
-            (0.0, 0.0, 1.0, 1.0, 2.0),
-            (50_000.0, 0.0, 1.0, 1.0, 1.25),
-        ] {
-            for phase in 0..3 {
-                let mut frame = Frame::new(&(), Size::new(100_000.0, 1000.0));
-                frame.with_clip(
-                    Rectangle::new(Point::new(base + 5.0, 8.0), Size::new(111.0, 104.0)),
-                    |f| {
-                        f.translate(Vector::new(
-                            base + phase as f32 * 0.37,
-                            phase as f32 * -0.63,
-                        ));
-                        f.rotate(rotation as f32);
-                        f.scale_nonuniform(Vector::new(sx, sy));
-                        let path = Path::new(|p| {
-                            p.move_to(Point::new(8.0, 28.0));
-                            p.bezier_curve_to(
-                                Point::new(17.0, -5.0),
-                                Point::new(58.0, 110.0),
-                                Point::new(78.0, 36.0),
-                            );
-                            p.quadratic_curve_to(Point::new(119.0, 0.0), Point::new(107.0, 91.0));
-                            if !stroke {
-                                p.line_to(Point::new(12.0, 98.0));
-                                p.close();
-                                p.move_to(Point::new(35.0, 60.0));
-                                p.quadratic_curve_to(
-                                    Point::new(65.0, 45.0),
-                                    Point::new(62.0, 80.0),
-                                );
-                                p.close();
-                            }
-                        });
-                        let gradient = crate::gradient::Linear::new(
-                            Point::new(0.0, 0.0),
-                            Point::new(120.0, 100.0),
-                        )
-                        .add_stop(0.0, Color::from_rgba(1.0, 0.2, 0.1, 0.7))
-                        .add_stop(1.0, Color::from_rgba(0.1, 0.4, 1.0, 0.5));
-                        let style = if phase == 1 {
-                            crate::Style::Solid(Color::from_rgba(0.1, 0.9, 0.3, 0.6))
-                        } else {
-                            crate::Style::Gradient(gradient.into())
-                        };
-                        if stroke {
-                            f.stroke(
-                                &path,
-                                Stroke {
-                                    style,
-                                    width: 3.25,
-                                    line_cap: crate::LineCap::Round,
-                                    line_join: crate::LineJoin::Miter,
-                                    ..Default::default()
-                                },
-                            );
-                        } else {
-                            f.fill(
-                                &path,
-                                crate::Fill {
-                                    style,
-                                    rule: crate::fill::Rule::EvenOdd,
-                                },
-                            );
-                        }
-                    },
-                );
-                let geometry = frame.into_geometry();
-                let crop = Rectangle::new(
-                    Point::new(base + phase as f32 * 1.25, phase as f32 * -0.5),
-                    bounds.size(),
-                );
-                let viewport = shader::Viewport::with_physical_size(
-                    Size::new((128.0 * dpi) as u32, (128.0 * dpi) as u32),
-                    dpi,
-                );
-                let reference = Primitive::with_bounds(geometry.clone(), crop);
-                pipeline
-                    .renderer
-                    .get_mut()
-                    .unwrap()
-                    .set_curve_cache_enabled(false);
-                reference.prepare(&mut pipeline, &device, &queue, &bounds, &viewport);
-                let reference = render(
-                    &device,
-                    &queue,
-                    &pipeline,
-                    &[&reference],
-                    (128.0 * dpi) as u32,
-                );
-                let candidate = Primitive::layers(u64::MAX - 100, vec![geometry], crop);
-                pipeline
-                    .renderer
-                    .get_mut()
-                    .unwrap()
-                    .set_curve_cache_enabled(true);
-                candidate.prepare(&mut pipeline, &device, &queue, &bounds, &viewport);
-                let pixels = render(
-                    &device,
-                    &queue,
-                    &pipeline,
-                    &[&candidate],
-                    (128.0 * dpi) as u32,
-                );
-                let max_error = reference
-                    .iter()
-                    .zip(&pixels)
-                    .map(|(a, b)| a.abs_diff(*b))
-                    .max()
-                    .unwrap();
-                assert!(
-                    max_error <= 3,
-                    "curve mismatch stroke={stroke} base={base} rotation={rotation} dpi={dpi} phase={phase}: {max_error}"
-                );
-            }
-        }
-    }
-    let (hits, preparations, count, bytes) = pipeline.renderer.get_mut().unwrap().curve_stats();
-    assert!(
-        hits >= preparations && preparations > 0,
-        "cache must reuse geometry: {hits}/{preparations}"
-    );
-    assert!(count > 0 && bytes <= 8 * 1024 * 1024);
-}
-
 fn render(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -719,24 +511,7 @@ fn render(
     primitives: &[&Primitive],
     size: u32,
 ) -> Vec<u8> {
-    render_recorded(
-        device,
-        queue,
-        pipeline,
-        primitives,
-        size,
-        device.create_command_encoder(&Default::default()),
-    )
-}
-
-fn render_recorded(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    pipeline: &Pipeline,
-    primitives: &[&Primitive],
-    size: u32,
-    mut encoder: wgpu::CommandEncoder,
-) -> Vec<u8> {
+    let mut encoder = device.create_command_encoder(&Default::default());
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("canvas test target"),
         size: wgpu::Extent3d {
@@ -819,12 +594,13 @@ fn assert_pixel(pixels: &[u8], width: usize, x: usize, y: usize, expected: [u8; 
 
 #[ignore = "requires an actual GPU"]
 #[test]
-fn retained_tiles_overlay_and_ordered_cold_glyphs() {
+fn retained_tiles_preserve_glyphs_and_reuse_rasters() {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
     let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         required_limits: wgpu::Limits {
-            max_bind_groups: 4,
+            max_bind_groups: 2,
+            max_non_sampler_bindings: 2048,
             ..Default::default()
         },
         ..Default::default()
@@ -860,19 +636,10 @@ fn retained_tiles_overlay_and_ordered_cold_glyphs() {
     let b = tile(64., "Ωfi");
     let first = Primitive::layer(100, 0, a.clone(), clip);
     let second = Primitive::layer(100, 1, b.clone(), clip);
-    let mut encoder = device.create_command_encoder(&Default::default());
     for primitive in [&first, &second] {
-        primitive.prepare_with_encoder(
-            &mut pipeline,
-            &device,
-            &queue,
-            &mut encoder,
-            &clip,
-            &viewport,
-        );
+        primitive.prepare(&mut pipeline, &device, &queue, &clip, &viewport);
     }
-    let pixels = render_recorded(&device, &queue, &pipeline, &[&first, &second], 128, encoder);
-    pipeline.after_submit();
+    let pixels = render(&device, &queue, &pipeline, &[&first, &second], 128);
     let half = (iced::advanced::graphics::color::pack(Color::from_rgb(0.5, 0.5, 0.5)).components()
         [0]
         * 255.)
@@ -896,19 +663,10 @@ fn retained_tiles_overlay_and_ordered_cold_glyphs() {
     let pan = Rectangle { x: 0.375, ..clip };
     let first = Primitive::layer(100, 0, a.clone(), pan);
     let second = Primitive::layer(100, 1, b.clone(), pan);
-    let mut encoder = device.create_command_encoder(&Default::default());
     for primitive in [&first, &second] {
-        primitive.prepare_with_encoder(
-            &mut pipeline,
-            &device,
-            &queue,
-            &mut encoder,
-            &clip,
-            &viewport,
-        );
+        primitive.prepare(&mut pipeline, &device, &queue, &clip, &viewport);
     }
-    let panned = render_recorded(&device, &queue, &pipeline, &[&first, &second], 128, encoder);
-    pipeline.after_submit();
+    let panned = render(&device, &queue, &pipeline, &[&first, &second], 128);
     assert_eq!(pipeline.rasters, rasters);
     assert_eq!(pipeline.allocations, allocations);
     for x in [62, 63, 64, 65] {
@@ -922,26 +680,16 @@ fn retained_tiles_overlay_and_ordered_cold_glyphs() {
         Color::from_rgb(0., 0., 1.),
     );
     let overlay = Primitive::layer(100, 2, overlay.into_geometry(), pan);
-    let mut encoder = device.create_command_encoder(&Default::default());
     for primitive in [&first, &second, &overlay] {
-        primitive.prepare_with_encoder(
-            &mut pipeline,
-            &device,
-            &queue,
-            &mut encoder,
-            &clip,
-            &viewport,
-        );
+        primitive.prepare(&mut pipeline, &device, &queue, &clip, &viewport);
     }
-    let selected = render_recorded(
+    let selected = render(
         &device,
         &queue,
         &pipeline,
         &[&first, &second, &overlay],
         128,
-        encoder,
     );
-    pipeline.after_submit();
     assert_eq!(pipeline.rasters, rasters + 1);
     assert_pixel(&selected, 128, 64, 75, [0, 0, 255, 255]);
     // Different scale must replace tile pixels, while unused retention eventually expires.

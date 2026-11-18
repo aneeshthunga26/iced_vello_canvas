@@ -12,27 +12,15 @@ const FPS_SAMPLE: Duration = Duration::from_millis(500);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
     Iced,
-    #[cfg(feature = "gpu")]
-    VelloGpu,
-    #[cfg(any(feature = "compute", not(feature = "gpu")))]
     VelloCompute,
 }
 
 impl Mode {
-    const AVAILABLE: &[Self] = &[
-        Self::Iced,
-        #[cfg(feature = "gpu")]
-        Self::VelloGpu,
-        #[cfg(any(feature = "compute", not(feature = "gpu")))]
-        Self::VelloCompute,
-    ];
+    const AVAILABLE: [Self; 2] = [Self::Iced, Self::VelloCompute];
 
     fn label(self) -> &'static str {
         match self {
             Self::Iced => "Iced",
-            #[cfg(feature = "gpu")]
-            Self::VelloGpu => "Vello GPU",
-            #[cfg(any(feature = "compute", not(feature = "gpu")))]
             Self::VelloCompute => "Vello Compute",
         }
     }
@@ -127,12 +115,6 @@ impl App {
                 .width(Fill)
                 .height(Fill)
                 .into(),
-            #[cfg(feature = "gpu")]
-            Mode::VelloGpu => iced_vello_canvas::canvas(strips::Drawing { scene })
-                .width(Fill)
-                .height(Fill)
-                .into(),
-            #[cfg(any(feature = "compute", not(feature = "gpu")))]
             Mode::VelloCompute => iced_vello_canvas::canvas(compute::Drawing { scene })
                 .width(Fill)
                 .height(Fill)
@@ -257,7 +239,7 @@ impl Animation {
 
 // All renderers receive the same timestamps, paths, transforms and stroke color.
 macro_rules! drawing {
-    ($frame:expr) => {
+    () => {
         /// Draws the shared animation through this module's canvas API.
         pub(super) struct Drawing<'a> {
             /// The paths and time origin shared by both panels.
@@ -292,7 +274,7 @@ macro_rules! drawing {
                 bounds: Rectangle,
                 _cursor: mouse::Cursor,
             ) -> Vec<canvas::Geometry> {
-                let mut frame = ($frame)(renderer, bounds.size());
+                let mut frame = canvas::Frame::new(renderer, bounds.size());
                 let elapsed = state
                     .last_frame
                     .unwrap_or(self.scene.started)
@@ -322,25 +304,12 @@ mod reference {
     use super::*;
     use iced::widget::canvas;
 
-    drawing!(canvas::Frame::new);
+    drawing!();
 }
 
-#[cfg(feature = "gpu")]
-mod strips {
-    use super::*;
-    use iced_vello_canvas as canvas;
-
-    drawing!(canvas::Frame::new);
-}
-
-#[cfg(any(feature = "compute", not(feature = "gpu")))]
 mod compute {
     use super::*;
     use iced_vello_canvas as canvas;
 
-    drawing!(|renderer, size| canvas::Frame::with_backend(
-        renderer,
-        size,
-        canvas::RendererBackend::Compute
-    ));
+    drawing!();
 }

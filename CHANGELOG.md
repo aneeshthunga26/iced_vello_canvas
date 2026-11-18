@@ -2,15 +2,8 @@
 
 ## Unreleased
 
-- Enable Vello Compute alongside the strip renderer with the `compute` feature.
-- Compare Iced, Vello GPU, and Vello Compute in the Bézier example's single viewport.
-- Preserve stroke-outline reuse during fractional motion and avoid cache churn
-  in dense animated scenes.
-- Added a live Bézier curve FPS comparison with side-by-side and solo modes.
-- Default to the proof of concept's Vello GPU strip renderer. The compute
-  renderer remains available when the `gpu` feature is disabled.
-- Carry the wgpu 27 compatibility port and Iced submission hooks needed by the
-  strip renderer. Disable crates.io publication while those patches are required.
-- Extracted the native Vello canvas widget for Iced 0.14 with paths, text,
-  clipping, transforms and retained raster regions.
-- Added a minimal usage example and retained the side-by-side Iced comparison.
+- Use Vello Compute as the canvas renderer with stock Iced 0.14 and released
+  crates.io dependencies.
+- Compare Iced and Vello Compute with animated Bézier curves in a single viewport,
+  or inspect the static quality comparison side by side.
+- Retain raster regions across redraws and panning.

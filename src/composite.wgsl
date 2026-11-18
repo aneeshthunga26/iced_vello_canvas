@@ -29,10 +29,7 @@ fn load_pixel(pixel: vec2<i32>) -> vec4<f32> {
     let size = vec2<i32>(textureDimensions(image));
     let color = textureLoad(image, clamp(pixel, vec2(0), size - vec2(1)), 0);
     // Convert before filtering, keeping interpolation premultiplied in Iced's space.
-    var srgb = color.rgb;
-    if (SOURCE_PREMULTIPLIED && color.a > 0.) {
-        srgb /= color.a;
-    }
+    let srgb = color.rgb;
     if (LINEAR_TARGET && color.a > 0.) {
         let linear = select(
             pow((srgb + vec3(0.055)) / 1.055, vec3(2.4)),

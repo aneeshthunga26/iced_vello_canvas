@@ -1,24 +1,19 @@
 # iced_vello_canvas
 
 A native canvas widget for [Iced 0.14](https://iced.rs/) that rasterizes paths
-and text with [Vello GPU](https://github.com/linebender/vello/tree/main/vello_gpu)
-on Iced's existing WGPU device. The crate implements a subset of
+and text with [Vello Compute](https://github.com/linebender/vello) on Iced's
+existing WGPU device. The crate implements a subset of
 `iced::widget::canvas` and retains raster output across redraws and panning.
 
 ## Getting started
 
 Build the examples from a checkout of this repository. To use the widget in an
-app, put the two dependency patches in the app's root `Cargo.toml` (or its
-workspace root). Cargo reads patches from the consuming workspace.
+app, pair the Git dependency with the released Iced crate.
 
 ```toml
 [dependencies]
 iced = "0.14"
 iced_vello_canvas = { git = "https://github.com/aneeshthunga26/iced_vello_canvas" }
-
-[patch.crates-io]
-iced_wgpu = { git = "https://github.com/aneeshthunga26/iced_vello_canvas" }
-vello_gpu = { git = "https://github.com/aneeshthunga26/iced_vello_canvas" }
 ```
 
 For a canvas program using the supported API, import this crate as `canvas`.
@@ -41,37 +36,23 @@ view using `canvas::Canvas::new(program)` or `canvas::canvas(program)`.
 ```sh
 cargo run --locked --example basic
 cargo run --locked --release --example comparison
-cargo run --locked --release --features compute --example bezier_fps
+cargo run --locked --release --example bezier_fps
 ```
 
-The Bézier example renders one canvas at a time. Switch between **Iced**,
-**Vello GPU**, and **Vello Compute** to measure each renderer with the same
-paths and viewport size. The selector lists the backends enabled in the build.
-The counter averages redraws over at least half a second. Iced uses its
-antialiasing setting and Vello uses its native antialiasing. The example
-requests VSync off, though your compositor or GPU backend may still limit the
-redraw rate.
+The Bézier example switches between **Iced** and **Vello Compute** in the same
+viewport, using the same animated paths. The counter averages redraws over at
+least half a second. The example requests VSync off, though your compositor or
+GPU backend may still limit the redraw rate.
 
 ## Compatibility
 
-Use Iced 0.14 with its WGPU renderer (wgpu 27). The default `gpu` feature uses
-Vello GPU's sparse-strip renderer and requires a native adapter that supports
-four bind groups. Enable `compute` to make Vello 0.7's area-antialiasing
-compute renderer available alongside it on a compute-capable adapter.
-Select it with `Frame::with_backend(renderer, size, RendererBackend::Compute)`
-or `Cache::with_backend(RendererBackend::Compute)`. Existing constructors
-choose the strip renderer when `gpu` is enabled. Builds without `gpu`
-continue to default to compute. On Linux, select `x11` or `wayland`.
+Use Iced 0.14 with its WGPU renderer (wgpu 27) and a native compute-capable
+adapter. Vello 0.7 applies area antialiasing. On Linux the default `x11` feature
+enables Iced's X11 support. For a Wayland-only build, use:
 
 ```sh
-cargo run --locked --no-default-features --features gpu,wayland --example basic
-cargo run --locked --no-default-features --features x11 --example comparison
+cargo run --locked --no-default-features --features wayland --example basic
 ```
-
-The [vendored patches](vendor/README.md) let Vello GPU 0.4 share Iced's wgpu 27
-device and record work into Iced's frame encoder. The Git checkout is usable
-with those patches. Crates.io publication is disabled while the patches
-are required.
 
 | API | Supported operations |
 | --- | --- |
@@ -95,20 +76,19 @@ are unsupported. Vello initialization and rendering errors currently panic.
 cargo fmt --all --check
 cargo test --locked
 cargo test --locked --lib -- --include-ignored
-cargo test --locked --no-default-features --features x11 --lib -- --include-ignored
 cargo check --locked --all-targets
+cargo package --locked
 ```
 
-The `--include-ignored` commands run offscreen pixel tests on a native WGPU
-adapter. They cover clipping, alpha blending, text, large drawing crops and
-retained regions during panning and DPI changes. The default suite also checks
-that cached stroke outlines preserve the strip renderer's pixels.
+The `--include-ignored` command runs offscreen pixel tests on a native
+compute-capable adapter. They cover clipping, alpha blending, text, large
+drawing crops, and retained regions during panning and DPI changes.
 
-Run the GPU curve benchmark with `cargo bench --locked --bench curves -- 48 1000`
+Run the compute curve benchmark with `cargo bench --locked --bench curves -- 48 1000`
 for 48 measured frames per repetition and a 1,000 FPS cap. Omit the cap for
 uncapped runs.
 
 ## License
 
 [MIT](LICENSE), including the notice for the widget lifecycle and program API
-adapted from Iced. The vendored dependencies retain their upstream license files.
+adapted from Iced.

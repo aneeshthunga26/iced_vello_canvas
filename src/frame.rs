@@ -6,11 +6,11 @@ use std::sync::{
 
 use iced::{Color, Point, Radians, Rectangle, Size, Vector};
 use vello::{
+    Scene,
     kurbo::{self, Affine, BezPath, Rect},
     peniko,
 };
 
-use crate::scene::Scene;
 use crate::{Fill, Gradient, LineCap, LineJoin, Path, RendererBackend, Stroke, Style, Text, fill};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -68,24 +68,24 @@ impl Frame {
         Self::with_bounds(_renderer, Rectangle::with_size(size))
     }
 
-    /// Creates a frame using the selected backend and an origin at `(0, 0)`.
-    pub fn with_backend<R>(renderer: &R, size: Size, backend: RendererBackend) -> Self {
-        Self::with_bounds_and_backend(renderer, Rectangle::with_size(size), backend)
+    /// Creates a frame explicitly using Vello Compute, with origin at `(0, 0)`.
+    pub fn with_backend<R>(renderer: &R, size: Size, _backend: RendererBackend) -> Self {
+        Self::new(renderer, size)
+    }
+
+    /// Creates a frame with explicit bounds using Vello Compute.
+    pub fn with_bounds_and_backend<R>(
+        renderer: &R,
+        bounds: Rectangle,
+        _backend: RendererBackend,
+    ) -> Self {
+        Self::with_bounds(renderer, bounds)
     }
 
     /// Creates a frame clipped to logical bounds without translating its coordinate system.
-    pub fn with_bounds<R>(renderer: &R, bounds: Rectangle) -> Self {
-        Self::with_bounds_and_backend(renderer, bounds, RendererBackend::default())
-    }
-
-    /// Creates a frame with explicit bounds and renderer backend.
-    pub fn with_bounds_and_backend<R>(
-        _renderer: &R,
-        bounds: Rectangle,
-        backend: RendererBackend,
-    ) -> Self {
-        let mut scene = Scene::new(backend);
-        scene.clip_rect(Affine::IDENTITY, rect(bounds));
+    pub fn with_bounds<R>(_renderer: &R, bounds: Rectangle) -> Self {
+        let mut scene = Scene::new();
+        scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &rect(bounds));
         Self {
             scene,
             bounds,
@@ -127,6 +127,7 @@ impl Frame {
             rule,
             self.transform,
             &brush(fill.style),
+            None,
             &convert_path(path),
         );
     }
@@ -139,11 +140,12 @@ impl Frame {
             fill::Rule::NonZero => peniko::Fill::NonZero,
             fill::Rule::EvenOdd => peniko::Fill::EvenOdd,
         };
-        self.scene.fill_rect(
+        self.scene.fill(
             rule,
             self.transform,
             &brush(fill.style),
-            rect(Rectangle::new(top_left, size)),
+            None,
+            &rect(Rectangle::new(top_left, size)),
         );
     }
 
@@ -182,8 +184,7 @@ impl Frame {
             path = kurbo::dash(path.iter(), 0.0, &segments).collect();
         }
         // Iced transforms the centerline before stroking, preserving logical stroke
-        // width under Frame::scale. Keep translation separate so moving curves
-        // retain the same local coordinates and reuse their prepared outlines.
+        // width under Frame::scale. Keep translation in the scene transform.
         let [a, b, c, d, x, y] = self.transform.as_coeffs();
         let linear = Affine::new([a, b, c, d, 0.0, 0.0]);
         path.apply_affine(linear);
@@ -191,8 +192,8 @@ impl Frame {
             &style,
             Affine::translate((x, y)),
             &brush(stroke.style),
-            linear,
-            path,
+            Some(linear),
+            &path,
         );
     }
 
@@ -244,11 +245,11 @@ impl Frame {
     /// The child uses canvas coordinates and starts with an identity transform.
     /// It does not inherit the parent transform or shift the origin to the region.
     pub fn with_clip<T>(&mut self, region: Rectangle, draw: impl FnOnce(&mut Self) -> T) -> T {
-        let mut child = Frame::with_bounds_and_backend(&(), region, self.scene.backend());
+        let mut child = Frame::with_bounds(&(), region);
         let result = draw(&mut child);
         let geometry = child.into_geometry();
         self.drawn |= !geometry.empty;
-        self.scene.append(&geometry.scene);
+        self.scene.append(&geometry.scene, None);
         result
     }
 

@@ -1,8 +1,7 @@
 //! A Vello-backed canvas widget for native Iced 0.14 applications.
 //!
 //! The widget implements a subset of Iced's canvas API and uses the application's
-//! existing WGPU renderer. The default `gpu` feature uses Vello's strip renderer.
-//! Enable `compute` to select the compute renderer with [`Frame::with_backend`].
+//! existing WGPU renderer with Vello's area-antialiasing compute pipeline.
 //! See [the README](https://github.com/aneeshthunga26/iced_vello_canvas) for
 //! supported operations and platform features.
 //!
@@ -12,23 +11,27 @@
 
 mod backend;
 mod cache;
-#[cfg(feature = "gpu")]
-mod curves;
 mod frame;
 mod primitive;
-mod scene;
 mod text;
 mod widget;
 
 pub use cache::Cache;
 pub use frame::{Frame, Geometry};
-pub use scene::RendererBackend;
 pub use widget::{Canvas, Program};
 
 pub use iced::widget::canvas::{
     Action, Event, Fill, Gradient, Group, LineCap, LineDash, LineJoin, Path, Stroke, Style, Text,
     fill, gradient, path, stroke,
 };
+
+/// Identifies the renderer used for canvas geometry.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RendererBackend {
+    /// Vello's area-antialiasing compute renderer.
+    #[default]
+    Compute,
+}
 
 /// Creates a Vello canvas with Iced's default theme and renderer.
 pub fn canvas<P, Message>(program: P) -> Canvas<P, Message>

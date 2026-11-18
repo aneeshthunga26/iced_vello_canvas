@@ -10,7 +10,6 @@ use crate::{Frame, Geometry, RendererBackend};
 /// Renderer raster caches also include physical size, so changing DPI rerasterizes the scene.
 #[derive(Debug, Default)]
 pub struct Cache {
-    backend: RendererBackend,
     entry: RefCell<Option<(Rectangle, Geometry)>>,
 }
 
@@ -20,12 +19,9 @@ impl Cache {
         Self::default()
     }
 
-    /// Creates an empty cache whose frames use the selected backend.
-    pub fn with_backend(backend: RendererBackend) -> Self {
-        Self {
-            backend,
-            entry: RefCell::new(None),
-        }
+    /// Creates an empty cache explicitly using Vello Compute.
+    pub fn with_backend(_backend: RendererBackend) -> Self {
+        Self::new()
     }
 
     /// Invalidates the scene; the next draw calls its closure again.
@@ -53,7 +49,7 @@ impl Cache {
         {
             return geometry.clone();
         }
-        let mut frame = Frame::with_bounds_and_backend(renderer, bounds, self.backend);
+        let mut frame = Frame::with_bounds(renderer, bounds);
         draw(&mut frame);
         let geometry = frame.into_geometry();
         *entry = Some((bounds, geometry.clone()));

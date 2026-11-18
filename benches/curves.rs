@@ -5,12 +5,10 @@
 #![allow(dead_code)]
 #[path = "../src/backend.rs"]
 mod backend;
-#[path = "../src/curves.rs"]
-mod curves;
 #[path = "../src/frame.rs"]
 mod frame;
-#[path = "../src/scene.rs"]
-mod scene;
+// Share the production frame API, including its explicit backend constructors.
+use iced_vello_canvas::RendererBackend;
 // Cargo sets cfg(test) for this harness-free bench; shared unit-test imports are unused here.
 #[allow(unused_imports)]
 #[path = "../src/text.rs"]
@@ -20,7 +18,6 @@ pub use iced::widget::canvas::{
     Fill, Gradient, LineCap, LineJoin, Path, Stroke, Style, Text, fill, path,
 };
 use iced::{Color, Point, Size, wgpu};
-pub use scene::RendererBackend;
 use std::{
     fs,
     time::{Duration, Instant},
@@ -99,7 +96,7 @@ fn main() {
     eprintln!("ADAPTER {:?}", adapter.get_info());
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         required_limits: wgpu::Limits {
-            max_bind_groups: 4,
+            max_bind_groups: 2,
             max_non_sampler_bindings: 2048,
             ..Default::default()
         },
@@ -127,7 +124,7 @@ fn main() {
         for count in [128, 512] {
             for repetition in 0..3 {
                 let geometry = fixture(count, stroked);
-                let mut backend = backend::Backend::default();
+                let mut backend = backend::Backend::new(&device);
                 for i in 0..12 {
                     let start = Instant::now();
                     backend.render(
