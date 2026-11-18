@@ -1,0 +1,29 @@
+[package]
+name = "iced_vello_canvas"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+description = "A Vello-backed canvas widget for Iced"
+repository = "https://github.com/aneeshthunga26/iced_vello_canvas"
+readme = "README.md"
+keywords = ["iced", "canvas", "vello", "graphics", "wgpu"]
+categories = ["gui", "rendering::graphics-api"]
+include = ["/src", "/examples", "/README.md", "/LICENSE", "/CHANGELOG.md"]
+
+[features]
+default = ["x11"]
+x11 = ["iced/x11"]
+wayland = ["iced/wayland"]
+
+[dependencies]
+iced = { version = "0.14.0", default-features = false, features = ["advanced", "canvas", "wgpu", "thread-pool"] }
+iced_wgpu = "0.14.0"
+vello = { version = "0.7.0", default-features = false, features = ["wgpu"] }
+
+[dev-dependencies]
+iced = { version = "0.14.0", default-features = false, features = ["fira-sans"] }
+pollster = "0.4"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
