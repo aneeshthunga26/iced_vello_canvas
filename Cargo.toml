@@ -7,23 +7,36 @@ license = "MIT"
 description = "A Vello-backed canvas widget for Iced"
 repository = "https://github.com/aneeshthunga26/iced_vello_canvas"
 readme = "README.md"
+publish = false
 keywords = ["iced", "canvas", "vello", "graphics", "wgpu"]
 categories = ["gui", "rendering::graphics-api"]
-include = ["/src", "/examples", "/README.md", "/LICENSE", "/CHANGELOG.md"]
 
 [features]
-default = ["x11"]
+default = ["gpu", "x11"]
+gpu = ["dep:glifo", "dep:vello_common", "dep:vello_gpu"]
 x11 = ["iced/x11"]
 wayland = ["iced/wayland"]
 
 [dependencies]
 iced = { version = "0.14.0", default-features = false, features = ["advanced", "canvas", "wgpu", "thread-pool"] }
-iced_wgpu = "0.14.0"
-vello = { version = "0.7.0", default-features = false, features = ["wgpu"] }
+iced_wgpu = "=0.14.0"
+vello = { version = "=0.7.0", default-features = false, features = ["wgpu"] }
+glifo = { version = "=0.5.0", default-features = false, features = ["std"], optional = true }
+vello_common = { version = "=0.4.0", default-features = false, features = ["std"], optional = true }
+vello_gpu = { version = "=0.4.0", default-features = false, features = ["wgpu", "text", "full_image_support"], optional = true }
 
 [dev-dependencies]
 iced = { version = "0.14.0", default-features = false, features = ["fira-sans"] }
 pollster = "0.4"
+
+[patch.crates-io]
+iced_wgpu = { path = "vendor/iced_wgpu" }
+vello_gpu = { path = "vendor/vello_gpu" }
+
+[[bench]]
+name = "curves"
+harness = false
+required-features = ["gpu"]
 
 [lints.rustdoc]
 broken_intra_doc_links = "deny"

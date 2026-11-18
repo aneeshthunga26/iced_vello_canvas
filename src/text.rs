@@ -11,12 +11,12 @@ use iced::{
 };
 use text::cosmic_text::fontdb;
 use vello::{
-    Glyph, Scene,
+    Glyph,
     kurbo::Affine,
     peniko::{Blob, FontData},
 };
 
-use crate::Text;
+use crate::{Text, scene::Scene};
 
 thread_local! {
     // Keep font blob identity stable across geometry and shaped-run cache eviction.
@@ -152,12 +152,14 @@ pub(crate) fn draw(scene: &mut Scene, transform: Affine, value: Text) {
     let transform =
         transform * Affine::translate((f64::from(value.position.x), f64::from(value.position.y)));
     for run in &shaped.runs {
-        scene
-            .draw_glyphs(&run.font)
-            .font_size(run.size)
-            .transform(transform)
-            .brush(crate::frame::color(value.color))
-            .draw(vello::peniko::Fill::NonZero, run.glyphs.iter().copied());
+        crate::scene::glyphs(
+            scene,
+            &run.font,
+            run.size,
+            transform,
+            crate::frame::color(value.color),
+            Arc::clone(&run.glyphs),
+        );
     }
 }
 

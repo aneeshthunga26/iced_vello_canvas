@@ -1,18 +1,24 @@
 # iced_vello_canvas
 
 A native canvas widget for [Iced 0.14](https://iced.rs/) that rasterizes paths
-and text with [Vello 0.7](https://github.com/linebender/vello) on Iced's existing
-WGPU device. The crate implements a subset of `iced::widget::canvas` and uses
-the released Iced and Vello crates.
+and text with [Vello GPU](https://github.com/linebender/vello/tree/main/vello_gpu)
+on Iced's existing WGPU device. The crate implements a subset of
+`iced::widget::canvas` and retains raster output across redraws and panning.
 
 ## Getting started
 
-Until the first crates.io release, depend on the Git repository.
+Build the examples from a checkout of this repository. To use the widget in an
+app, put the two dependency patches in the app's root `Cargo.toml` (or its
+workspace root). Cargo reads patches from the consuming workspace.
 
 ```toml
 [dependencies]
 iced = "0.14"
 iced_vello_canvas = { git = "https://github.com/aneeshthunga26/iced_vello_canvas" }
+
+[patch.crates-io]
+iced_wgpu = { git = "https://github.com/aneeshthunga26/iced_vello_canvas" }
+vello_gpu = { git = "https://github.com/aneeshthunga26/iced_vello_canvas" }
 ```
 
 For a canvas program using the supported API, import this crate as `canvas`.
@@ -37,9 +43,21 @@ cargo run --locked --release --example comparison
 
 ## Compatibility
 
-Use Iced 0.14 with its WGPU renderer (wgpu 27) and a native compute-capable
-adapter. On Linux, the default `x11` feature enables Iced's X11 support. For
-Wayland, enable `wayland`. Disable default features if you only need Wayland.
+Use Iced 0.14 with its WGPU renderer (wgpu 27). The default `gpu` feature uses
+Vello GPU's sparse-strip renderer and requires a native adapter that supports
+four bind groups. Disable `gpu` to use Vello 0.7's compute renderer, which
+requires compute shaders. On Linux, select `x11` or `wayland`. The default
+features enable `gpu` and `x11`.
+
+```sh
+cargo run --locked --no-default-features --features gpu,wayland --example basic
+cargo run --locked --no-default-features --features x11 --example comparison
+```
+
+The [vendored patches](vendor/README.md) let Vello GPU 0.4 share Iced's wgpu 27
+device and record work into Iced's frame encoder. The Git checkout is usable
+with those patches. Crates.io publication is disabled while the patches
+are required.
 
 | API | Supported operations |
 | --- | --- |
@@ -63,14 +81,20 @@ are unsupported. Vello initialization and rendering errors currently panic.
 cargo fmt --all --check
 cargo test --locked
 cargo test --locked --lib -- --include-ignored
-cargo package --locked
+cargo test --locked --no-default-features --features x11 --lib -- --include-ignored
+cargo check --locked --all-targets
 ```
 
-The `--include-ignored` command runs offscreen pixel tests that require a
-compute-capable WGPU adapter. They cover clipping, alpha blending, text,
-large drawing crops and retained regions during panning and DPI changes.
+The `--include-ignored` commands run offscreen pixel tests on a native WGPU
+adapter. They cover clipping, alpha blending, text, large drawing crops and
+retained regions during panning and DPI changes. The default suite also checks
+that cached stroke outlines preserve the strip renderer's pixels.
+
+Run the GPU curve benchmark with `cargo bench --locked --bench curves -- 48 1000`
+for 48 measured frames per repetition and a 1,000 FPS cap. Omit the cap for
+uncapped runs.
 
 ## License
 
 [MIT](LICENSE), including the notice for the widget lifecycle and program API
-adapted from Iced.
+adapted from Iced. The vendored dependencies retain their upstream license files.

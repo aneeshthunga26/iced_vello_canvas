@@ -1,10 +1,10 @@
 //! Shared Vello renderer, retained raster textures and premultiplied composition.
 use std::{collections::HashMap, sync::Mutex};
 
-#[cfg(test)]
-use iced::Size;
-use iced::{Rectangle, wgpu, widget::shader};
+use iced::{Rectangle, Size, wgpu, widget::shader};
 use vello::kurbo::Affine;
+
+use crate::backend::Backend;
 
 use crate::Geometry;
 
@@ -82,7 +82,7 @@ struct Surface {
 
 pub(crate) struct Pipeline {
     // Iced requires Sync pipelines. Preparation holds an exclusive reference.
-    renderer: Mutex<vello::Renderer>,
+    renderer: Mutex<Backend>,
     composite: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     surfaces: HashMap<Owner, Surface>,
@@ -94,15 +94,8 @@ pub(crate) struct Pipeline {
 }
 
 impl shader::Pipeline for Pipeline {
-    fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        let renderer = vello::Renderer::new(
-            device,
-            vello::RendererOptions {
-                antialiasing_support: vello::AaSupport::area_only(),
-                ..Default::default()
-            },
-        )
-        .expect("Vello initialization failed");
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+        let renderer = Backend::new(device, queue);
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Vello canvas texture"),
             entries: &[
@@ -129,8 +122,9 @@ impl shader::Pipeline for Pipeline {
             ],
         });
         let source = format!(
-            "const LINEAR_TARGET: bool = {};\n{}",
+            "const LINEAR_TARGET: bool = {};\nconst SOURCE_PREMULTIPLIED: bool = {};\n{}",
             iced::advanced::graphics::color::GAMMA_CORRECTION,
+            cfg!(feature = "gpu"),
             include_str!("composite.wgsl")
         );
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -209,6 +203,12 @@ impl shader::Pipeline for Pipeline {
             }
         }
     }
+    fn after_submit(&mut self) {
+        self.renderer
+            .get_mut()
+            .expect("Vello renderer poisoned")
+            .after_submit();
+    }
 }
 
 impl shader::Primitive for Primitive {
@@ -219,6 +219,25 @@ impl shader::Primitive for Primitive {
         pipeline: &mut Pipeline,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        bounds: &Rectangle,
+        viewport: &shader::Viewport,
+    ) {
+        let mut encoder = device.create_command_encoder(&Default::default());
+        self.prepare_with_encoder(pipeline, device, queue, &mut encoder, bounds, viewport);
+        queue.submit([encoder.finish()]);
+        pipeline
+            .renderer
+            .get_mut()
+            .expect("Vello renderer poisoned")
+            .after_submit();
+    }
+
+    fn prepare_with_encoder(
+        &self,
+        pipeline: &mut Pipeline,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
         _bounds: &Rectangle,
         viewport: &shader::Viewport,
     ) {
@@ -278,7 +297,9 @@ impl shader::Primitive for Primitive {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+                usage: wgpu::TextureUsages::STORAGE_BINDING
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
                 view_formats: &[],
             });
             let view = texture.create_view(&Default::default());
@@ -333,27 +354,21 @@ impl shader::Primitive for Primitive {
             f64::from(key.width) / f64::from(raster.width),
             f64::from(key.height) / f64::from(raster.height),
         ) * Affine::translate((-f64::from(raster.x), -f64::from(raster.y)));
-        let mut scene = vello::Scene::new();
-        for layer in &self.layers {
-            scene.append(&layer.scene, Some(transform));
-        }
         pipeline
             .renderer
             .get_mut()
             .expect("Vello renderer poisoned")
-            .render_to_texture(
+            .record(
                 device,
                 queue,
-                &scene,
-                &surface.view,
-                &vello::RenderParams {
-                    base_color: vello::peniko::Color::TRANSPARENT,
-                    width: key.width,
-                    height: key.height,
-                    antialiasing_method: vello::AaConfig::Area,
+                encoder,
+                crate::backend::Raster {
+                    layers: &self.layers,
+                    transform,
+                    view: &surface.view,
+                    size: Size::new(key.width, key.height),
                 },
-            )
-            .expect("Vello canvas rasterization failed");
+            );
         surface.key = key;
         #[cfg(test)]
         {

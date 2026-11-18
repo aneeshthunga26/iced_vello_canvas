@@ -43,7 +43,12 @@ impl App {
         .spacing(12)
         .width(Length::Fill);
         let right = column![
-            text("Vello canvas · area AA").size(20),
+            text(if cfg!(feature = "gpu") {
+                "Vello GPU canvas · analytic AA"
+            } else {
+                "Vello canvas · area AA"
+            })
+            .size(20),
             iced_vello_canvas::canvas(experiment::Drawing { zoom, count })
                 .width(Length::Fill)
                 .height(Length::Fill),

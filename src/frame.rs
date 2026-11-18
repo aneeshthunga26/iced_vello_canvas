@@ -6,11 +6,11 @@ use std::sync::{
 
 use iced::{Color, Point, Radians, Rectangle, Size, Vector};
 use vello::{
-    Scene,
     kurbo::{self, Affine, BezPath, Rect},
     peniko,
 };
 
+use crate::scene::Scene;
 use crate::{Fill, Gradient, LineCap, LineJoin, Path, Stroke, Style, Text, fill};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -71,7 +71,7 @@ impl Frame {
     /// Creates a frame clipped to logical bounds without translating its coordinate system.
     pub fn with_bounds<R>(_renderer: &R, bounds: Rectangle) -> Self {
         let mut scene = Scene::new();
-        scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &rect(bounds));
+        crate::scene::clip_rect(&mut scene, Affine::IDENTITY, rect(bounds));
         Self {
             scene,
             bounds,
@@ -126,12 +126,12 @@ impl Frame {
             fill::Rule::NonZero => peniko::Fill::NonZero,
             fill::Rule::EvenOdd => peniko::Fill::EvenOdd,
         };
-        self.scene.fill(
+        crate::scene::fill_rect(
+            &mut self.scene,
             rule,
             self.transform,
             &brush(fill.style),
-            None,
-            &rect(Rectangle::new(top_left, size)),
+            rect(Rectangle::new(top_left, size)),
         );
     }
 
