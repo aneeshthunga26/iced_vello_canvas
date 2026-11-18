@@ -1,7 +1,8 @@
 //! Bounded translation-independent reuse of Vello's native stroke preparation.
+use lru::LruCache;
 use std::{
-    collections::HashMap,
     hash::{Hash, Hasher},
+    num::NonZeroUsize,
     sync::Arc,
 };
 use vello::kurbo::{Affine, BezPath, PathEl, Point, Rect, Stroke, StrokeCtx, Vec2};
@@ -11,7 +12,7 @@ use vello_common::{
     geometry::RectU16,
 };
 
-const MAX_ENTRIES: usize = 256;
+const MAX_ENTRIES: usize = 4096;
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SOURCE_ELEMENTS: usize = 1024;
 const MAX_PREPARED_POINTS: usize = 32_768;
@@ -54,10 +55,10 @@ impl Draw {
 
 /// A backend-owned cache keyed by exact normalized geometry, linear transform and stroke style.
 pub(crate) struct CurveCache {
-    entries: HashMap<u64, Vec<Entry>>,
-    count: usize,
+    entries: LruCache<u64, Entry>,
     bytes: usize,
-    clock: u64,
+    frame: u64,
+    admissions_blocked: bool,
     hits: u64,
     preparations: u64,
     level: Level,
@@ -70,10 +71,10 @@ pub(crate) struct CurveCache {
 impl Default for CurveCache {
     fn default() -> Self {
         Self {
-            entries: HashMap::new(),
-            count: 0,
+            entries: LruCache::new(NonZeroUsize::new(MAX_ENTRIES).unwrap()),
             bytes: 0,
-            clock: 0,
+            frame: 0,
+            admissions_blocked: false,
             hits: 0,
             preparations: 0,
             level: Level::try_detect().unwrap_or(Level::baseline()),
@@ -120,24 +121,28 @@ impl CurveCache {
             return None;
         }
         let hash = fingerprint(path, origin, bits, style);
-        self.clock += 1;
-        if let Some(bucket) = self.entries.get_mut(&hash) {
-            for entry in bucket {
-                if entry.linear == bits
-                    && entry.stroke == *style
-                    && entry
-                        .source
-                        .iter()
-                        .eq(path.iter().map(|el| normalized(el, origin)))
-                {
-                    entry.used = self.clock;
-                    self.hits += 1;
-                    return Some(Draw {
-                        prepared: Arc::clone(&entry.prepared),
-                        placement: (transform * origin).to_vec2() - entry.prepared.shift,
-                    });
-                }
+        if let Some(entry) = self.entries.get_mut(&hash) {
+            // A fingerprint collision must never reuse another path's edges.
+            if entry.linear != bits
+                || entry.stroke != *style
+                || !entry
+                    .source
+                    .iter()
+                    .eq(path.iter().map(|el| normalized(el, origin)))
+            {
+                return None;
             }
+            entry.used = self.frame;
+            self.hits += 1;
+            return Some(Draw {
+                prepared: Arc::clone(&entry.prepared),
+                placement: (transform * origin).to_vec2() - entry.prepared.shift,
+            });
+        }
+        if self.admissions_blocked
+            || (self.entries.len() == self.entries.cap().get() && !self.has_inactive_entry())
+        {
+            return None;
         }
         let source: BezPath = path.iter().map(|el| normalized(el, origin)).collect();
         flatten::expand_stroke(
@@ -180,44 +185,49 @@ impl CurveCache {
         if bytes > MAX_BYTES {
             return None;
         }
-        while self.count >= MAX_ENTRIES || self.bytes + bytes > MAX_BYTES {
-            self.evict();
+        while self.entries.len() == self.entries.cap().get() || self.bytes + bytes > MAX_BYTES {
+            if !self.has_inactive_entry() {
+                // Keep the working set for the current and preceding frame. Otherwise
+                // walking a scene larger than the cache can evict every entry each frame.
+                self.admissions_blocked = true;
+                return None;
+            }
+            let (_, entry) = self.entries.pop_lru().expect("inactive cache entry");
+            self.bytes -= entry.bytes;
         }
         self.preparations += 1;
         let prepared = Arc::new(Prepared {
             path: flattened,
             shift,
         });
-        self.entries.entry(hash).or_default().push(Entry {
-            source,
-            linear: bits,
-            stroke: style.clone(),
-            prepared: Arc::clone(&prepared),
-            used: self.clock,
-            bytes,
-        });
-        self.count += 1;
+        self.entries.put(
+            hash,
+            Entry {
+                source,
+                linear: bits,
+                stroke: style.clone(),
+                prepared: Arc::clone(&prepared),
+                used: self.frame,
+                bytes,
+            },
+        );
         self.bytes += bytes;
         Some(Draw {
             placement: (transform * origin).to_vec2() - prepared.shift,
             prepared,
         })
     }
-    fn evict(&mut self) {
-        let (hash, index) = self
-            .entries
-            .iter()
-            .flat_map(|(h, b)| b.iter().enumerate().map(move |(i, e)| (*h, i, e.used)))
-            .min_by_key(|(_, _, used)| *used)
-            .map(|(h, i, _)| (h, i))
-            .expect("nonempty curve cache");
-        let bucket = self.entries.get_mut(&hash).expect("curve bucket exists");
-        let entry = bucket.swap_remove(index);
-        if bucket.is_empty() {
-            self.entries.remove(&hash);
-        }
-        self.count -= 1;
-        self.bytes -= entry.bytes;
+
+    /// Advances cache admission after Iced submits all the raster jobs for a frame.
+    pub(crate) fn end_frame(&mut self) {
+        self.frame += 1;
+        self.admissions_blocked = false;
+    }
+
+    fn has_inactive_entry(&self) -> bool {
+        self.entries
+            .peek_lru()
+            .is_some_and(|(_, entry)| self.frame.saturating_sub(entry.used) > 1)
     }
     /// Enables native-path comparison in GPU tests without changing consumer APIs.
     #[cfg(test)]
@@ -227,7 +237,7 @@ impl CurveCache {
     /// Reports deterministic reuse and retained budgets for cache regression tests.
     #[cfg(test)]
     pub(crate) fn stats(&self) -> (u64, u64, usize, usize) {
-        (self.hits, self.preparations, self.count, self.bytes)
+        (self.hits, self.preparations, self.entries.len(), self.bytes)
     }
 }
 fn cacheable(bounds: Rect) -> bool {
@@ -343,14 +353,16 @@ mod tests {
     #[test]
     fn bounds_retention_and_falls_back_for_large_or_incomplete_shapes() {
         let mut cache = CurveCache::default();
-        for i in 0..MAX_ENTRIES + 10 {
+        let capacity = 16;
+        cache.entries.resize(NonZeroUsize::new(capacity).unwrap());
+        for i in 0..capacity + 10 {
             let mut path = BezPath::new();
             path.move_to((0.0, 0.0));
             path.curve_to((10.0, -20.0), (40.0 + i as f64 * 0.125, 70.0), (50.0, 30.0));
             path.close_path();
             cache.resolve(&path, &Stroke::new(2.0), Affine::IDENTITY);
         }
-        assert_eq!(cache.count, MAX_ENTRIES);
+        assert_eq!(cache.entries.len(), capacity);
         assert!(cache.bytes <= MAX_BYTES);
         let mut huge = curve();
         huge.apply_affine(Affine::scale(10_000.0));
@@ -365,6 +377,36 @@ mod tests {
         )];
         assert!(closed_edges(&incomplete).is_none());
     }
+    #[test]
+    fn retains_reused_strokes_when_the_working_set_exceeds_capacity() {
+        let mut cache = CurveCache::default();
+        cache.entries.resize(NonZeroUsize::new(2).unwrap());
+        let path = curve();
+        let style = Stroke::new(2.0);
+        let second = Stroke::new(3.0);
+        let overflow = Stroke::new(4.0);
+        let first = cache.resolve(&path, &style, Affine::IDENTITY).unwrap();
+        cache.resolve(&path, &second, Affine::IDENTITY).unwrap();
+
+        for frame in 1..=3 {
+            cache.end_frame();
+            let moved = Affine::translate((f64::from(frame) * 0.37, -0.61));
+            let draw = cache.resolve(&path, &style, moved).unwrap();
+            assert!(Arc::ptr_eq(&first.prepared, &draw.prepared));
+            assert!(cache.resolve(&path, &second, moved).is_some());
+            assert!(cache.resolve(&path, &overflow, moved).is_none());
+        }
+        assert_eq!(cache.stats().0, 6);
+        assert_eq!(cache.stats().1, 2);
+
+        cache.end_frame();
+        cache.resolve(&path, &style, Affine::IDENTITY).unwrap();
+        cache.end_frame();
+        assert!(cache.resolve(&path, &overflow, Affine::IDENTITY).is_some());
+        assert_eq!(cache.stats().1, 3);
+        assert_eq!(cache.entries.len(), 2);
+    }
+
     #[test]
     fn byte_budget_evicts_large_preparations_before_the_entry_limit() {
         let mut cache = CurveCache::default();
@@ -384,12 +426,13 @@ mod tests {
             cache
                 .resolve(&path, &Stroke::new(2.0), Affine::IDENTITY)
                 .expect("bounded complex stroke can be prepared");
+            cache.end_frame();
         }
         assert_eq!(cache.preparations, 50);
         assert!(
-            cache.count < 50 && cache.bytes <= MAX_BYTES,
+            cache.entries.len() < 50 && cache.bytes <= MAX_BYTES,
             "byte pressure must evict entries: {} / {}",
-            cache.count,
+            cache.entries.len(),
             cache.bytes
         );
     }

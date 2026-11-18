@@ -110,9 +110,9 @@ mod gpu {
             transform: Affine,
             brush: &Brush,
             brush_transform: Option<Affine>,
-            path: &BezPath,
+            path: BezPath,
         ) {
-            if let Some(rect) = straight_stroke(path, stroke) {
+            if let Some(rect) = straight_stroke(&path, stroke) {
                 Arc::make_mut(&mut self.commands).push(Command::Rect(
                     rect,
                     transform,
@@ -123,7 +123,7 @@ mod gpu {
                 return;
             }
             Arc::make_mut(&mut self.commands).push(Command::Stroke(
-                path.clone(),
+                path,
                 transform,
                 brush.clone(),
                 brush_transform.unwrap_or(Affine::IDENTITY),
@@ -283,18 +283,19 @@ mod gpu {
                     target.fill_rect(rect);
                 }
                 Command::Stroke(path, transform, brush, brush_transform, stroke) => {
-                    target.set_transform(outer * *transform);
-                    target.set_paint_transform(*brush_transform);
-                    target.set_stroke(stroke.clone());
+                    let transform = outer * *transform;
                     paint(target, brush);
-                    if let Some(cached) = curves.resolve(path, stroke, outer * *transform) {
+                    if let Some(cached) = curves.resolve(path, stroke, transform) {
                         target.set_transform(cached.transform());
                         target.set_paint_transform(
-                            cached.paint_transform(outer * *transform * *brush_transform),
+                            cached.paint_transform(transform * *brush_transform),
                         );
                         target.set_fill_rule(Fill::NonZero);
                         target.fill_path(cached.path());
                     } else {
+                        target.set_transform(transform);
+                        target.set_paint_transform(*brush_transform);
+                        target.set_stroke(stroke.clone());
                         target.stroke_path(path);
                     }
                 }

@@ -170,13 +170,19 @@ impl Frame {
             path = kurbo::dash(path.iter(), 0.0, &segments).collect();
         }
         // Iced transforms the centerline before stroking, preserving logical stroke
-        // width under Frame::scale. DPI scaling is applied later to the whole scene.
-        path.apply_affine(self.transform);
+        // width under Frame::scale. Keep translation separate so moving curves
+        // retain the same local coordinates and reuse their prepared outlines.
+        let [a, b, c, d, x, y] = self.transform.as_coeffs();
+        let linear = Affine::new([a, b, c, d, 0.0, 0.0]);
+        path.apply_affine(linear);
         self.scene.stroke(
             &style,
-            Affine::IDENTITY,
+            Affine::translate((x, y)),
             &brush(stroke.style),
-            Some(self.transform),
+            Some(linear),
+            #[cfg(feature = "gpu")]
+            path,
+            #[cfg(not(feature = "gpu"))]
             &path,
         );
     }

@@ -155,7 +155,10 @@ impl Backend {
     /// Releases staging buffers only after all recorded work has been submitted.
     pub(crate) fn after_submit(&mut self) {
         #[cfg(feature = "gpu")]
-        self.renderer.after_submit();
+        {
+            self.renderer.after_submit();
+            self.curves.end_frame();
+        }
     }
 }
 

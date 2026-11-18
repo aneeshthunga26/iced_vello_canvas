@@ -13,13 +13,14 @@ categories = ["gui", "rendering::graphics-api"]
 
 [features]
 default = ["gpu", "x11"]
-gpu = ["dep:glifo", "dep:vello_common", "dep:vello_gpu"]
+gpu = ["dep:glifo", "dep:lru", "dep:vello_common", "dep:vello_gpu"]
 x11 = ["iced/x11"]
 wayland = ["iced/wayland"]
 
 [dependencies]
 iced = { version = "0.14.0", default-features = false, features = ["advanced", "canvas", "wgpu", "thread-pool"] }
 iced_wgpu = "=0.14.0"
+lru = { version = "0.16", default-features = false, optional = true }
 vello = { version = "=0.7.0", default-features = false, features = ["wgpu"] }
 glifo = { version = "=0.5.0", default-features = false, features = ["std"], optional = true }
 vello_common = { version = "=0.4.0", default-features = false, features = ["std"], optional = true }
