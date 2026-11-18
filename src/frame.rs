@@ -11,7 +11,7 @@ use vello::{
 };
 
 use crate::scene::Scene;
-use crate::{Fill, Gradient, LineCap, LineJoin, Path, Stroke, Style, Text, fill};
+use crate::{Fill, Gradient, LineCap, LineJoin, Path, RendererBackend, Stroke, Style, Text, fill};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -68,10 +68,24 @@ impl Frame {
         Self::with_bounds(_renderer, Rectangle::with_size(size))
     }
 
+    /// Creates a frame using the selected backend and an origin at `(0, 0)`.
+    pub fn with_backend<R>(renderer: &R, size: Size, backend: RendererBackend) -> Self {
+        Self::with_bounds_and_backend(renderer, Rectangle::with_size(size), backend)
+    }
+
     /// Creates a frame clipped to logical bounds without translating its coordinate system.
-    pub fn with_bounds<R>(_renderer: &R, bounds: Rectangle) -> Self {
-        let mut scene = Scene::new();
-        crate::scene::clip_rect(&mut scene, Affine::IDENTITY, rect(bounds));
+    pub fn with_bounds<R>(renderer: &R, bounds: Rectangle) -> Self {
+        Self::with_bounds_and_backend(renderer, bounds, RendererBackend::default())
+    }
+
+    /// Creates a frame with explicit bounds and renderer backend.
+    pub fn with_bounds_and_backend<R>(
+        _renderer: &R,
+        bounds: Rectangle,
+        backend: RendererBackend,
+    ) -> Self {
+        let mut scene = Scene::new(backend);
+        scene.clip_rect(Affine::IDENTITY, rect(bounds));
         Self {
             scene,
             bounds,
@@ -113,7 +127,6 @@ impl Frame {
             rule,
             self.transform,
             &brush(fill.style),
-            None,
             &convert_path(path),
         );
     }
@@ -126,8 +139,7 @@ impl Frame {
             fill::Rule::NonZero => peniko::Fill::NonZero,
             fill::Rule::EvenOdd => peniko::Fill::EvenOdd,
         };
-        crate::scene::fill_rect(
-            &mut self.scene,
+        self.scene.fill_rect(
             rule,
             self.transform,
             &brush(fill.style),
@@ -179,11 +191,8 @@ impl Frame {
             &style,
             Affine::translate((x, y)),
             &brush(stroke.style),
-            Some(linear),
-            #[cfg(feature = "gpu")]
+            linear,
             path,
-            #[cfg(not(feature = "gpu"))]
-            &path,
         );
     }
 
@@ -235,11 +244,11 @@ impl Frame {
     /// The child uses canvas coordinates and starts with an identity transform.
     /// It does not inherit the parent transform or shift the origin to the region.
     pub fn with_clip<T>(&mut self, region: Rectangle, draw: impl FnOnce(&mut Self) -> T) -> T {
-        let mut child = Frame::with_bounds(&(), region);
+        let mut child = Frame::with_bounds_and_backend(&(), region, self.scene.backend());
         let result = draw(&mut child);
         let geometry = child.into_geometry();
         self.drawn |= !geometry.empty;
-        self.scene.append(&geometry.scene, None);
+        self.scene.append(&geometry.scene);
         result
     }
 

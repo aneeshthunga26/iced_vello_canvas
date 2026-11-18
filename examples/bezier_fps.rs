@@ -7,19 +7,35 @@ use iced::{Alignment, Color, Element, Fill, Point, Rectangle, Renderer, Size, Th
 use iced::{mouse, window};
 
 const COUNTS: [usize; 3] = [1_000, 3_000, 10_000];
-const PANEL_GAP: u32 = 16;
 const FPS_SAMPLE: Duration = Duration::from_millis(500);
-const VELLO: &str = if cfg!(feature = "gpu") {
-    "Vello GPU"
-} else {
-    "Vello Compute"
-};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
-    Both,
     Iced,
-    Vello,
+    #[cfg(feature = "gpu")]
+    VelloGpu,
+    #[cfg(any(feature = "compute", not(feature = "gpu")))]
+    VelloCompute,
+}
+
+impl Mode {
+    const AVAILABLE: &[Self] = &[
+        Self::Iced,
+        #[cfg(feature = "gpu")]
+        Self::VelloGpu,
+        #[cfg(any(feature = "compute", not(feature = "gpu")))]
+        Self::VelloCompute,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Iced => "Iced",
+            #[cfg(feature = "gpu")]
+            Self::VelloGpu => "Vello GPU",
+            #[cfg(any(feature = "compute", not(feature = "gpu")))]
+            Self::VelloCompute => "Vello Compute",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -57,7 +73,7 @@ fn main() -> iced::Result {
 impl App {
     fn new() -> Self {
         Self {
-            mode: Mode::Both,
+            mode: Mode::Iced,
             count: COUNTS[1],
             curves: (0..COUNTS[2]).map(Curve::new).collect(),
             started: Instant::now(),
@@ -91,11 +107,12 @@ impl App {
         .align_y(Alignment::Center);
 
         let controls = row![
-            self.mode_button(Mode::Both, "Side by side"),
-            self.mode_button(Mode::Iced, "Iced only"),
-            self.mode_button(Mode::Vello, "Vello only"),
+            row(Mode::AVAILABLE
+                .iter()
+                .map(|&mode| self.mode_button(mode).into()))
+            .spacing(8),
             Space::new().width(Fill),
-            text("Curves per canvas").size(14),
+            text("Curves").size(14),
             pick_list(COUNTS, Some(self.count), Message::SelectCount).text_size(14),
         ]
         .spacing(8)
@@ -105,48 +122,37 @@ impl App {
             curves: &self.curves[..self.count],
             started: self.started,
         };
-        let iced_panel = || {
-            panel(
-                "Iced Canvas",
-                iced::widget::canvas(reference::Drawing {
-                    scene,
-                    report_fps: true,
-                })
+        let canvas: Element<'_, Message> = match self.mode {
+            Mode::Iced => iced::widget::canvas(reference::Drawing { scene })
                 .width(Fill)
                 .height(Fill)
                 .into(),
-            )
-        };
-        let vello_panel = || {
-            panel(
-                VELLO,
-                iced_vello_canvas::canvas(experiment::Drawing {
-                    scene,
-                    report_fps: self.mode == Mode::Vello,
-                })
+            #[cfg(feature = "gpu")]
+            Mode::VelloGpu => iced_vello_canvas::canvas(strips::Drawing { scene })
                 .width(Fill)
                 .height(Fill)
                 .into(),
-            )
+            #[cfg(any(feature = "compute", not(feature = "gpu")))]
+            Mode::VelloCompute => iced_vello_canvas::canvas(compute::Drawing { scene })
+                .width(Fill)
+                .height(Fill)
+                .into(),
         };
-        let canvases = match self.mode {
-            Mode::Both => row![iced_panel().width(Fill), vello_panel().width(Fill),]
-                .spacing(PANEL_GAP)
-                .height(Fill),
-            Mode::Iced => center_panel(iced_panel()),
-            Mode::Vello => center_panel(vello_panel()),
-        };
+        let canvas = container(canvas)
+            .style(container::bordered_box)
+            .width(Fill)
+            .height(Fill);
 
-        container(column![heading, controls, canvases].spacing(16))
+        container(column![heading, controls, canvas].spacing(16))
             .padding(20)
             .width(Fill)
             .height(Fill)
             .into()
     }
 
-    fn mode_button<'a>(&self, mode: Mode, label: &'a str) -> button::Button<'a, Message> {
+    fn mode_button(&self, mode: Mode) -> button::Button<'static, Message> {
         let selected = self.mode == mode;
-        button(text(label).size(14))
+        button(text(mode.label()).size(14))
             .style(if selected {
                 button::primary
             } else {
@@ -154,32 +160,6 @@ impl App {
             })
             .on_press(Message::SelectMode(mode))
     }
-}
-
-fn panel<'a>(
-    title: &'static str,
-    canvas: Element<'a, Message>,
-) -> iced::widget::Column<'a, Message> {
-    column![
-        text(title).size(16),
-        container(canvas)
-            .style(container::bordered_box)
-            .width(Fill)
-            .height(Fill),
-    ]
-    .spacing(8)
-    .height(Fill)
-}
-
-fn center_panel<'a>(panel: iced::widget::Column<'a, Message>) -> iced::widget::Row<'a, Message> {
-    // The solo panel has the same width as either half of the two-panel view.
-    row![
-        Space::new().width(iced::Length::FillPortion(1)),
-        panel.width(iced::Length::FillPortion(2)),
-        Space::new().width(iced::Length::FillPortion(1)),
-    ]
-    .spacing(PANEL_GAP / 2)
-    .height(Fill)
 }
 
 struct Curve {
@@ -275,15 +255,13 @@ impl Animation {
     }
 }
 
-// The two canvas APIs receive the same timestamps, paths, transforms and stroke color.
+// All renderers receive the same timestamps, paths, transforms and stroke color.
 macro_rules! drawing {
-    () => {
+    ($frame:expr) => {
         /// Draws the shared animation through this module's canvas API.
         pub(super) struct Drawing<'a> {
             /// The paths and time origin shared by both panels.
             pub(super) scene: Scene<'a>,
-            /// Whether this panel reports the window's frame rate.
-            pub(super) report_fps: bool,
         }
 
         impl canvas::Program<Message> for Drawing<'_> {
@@ -299,10 +277,7 @@ macro_rules! drawing {
                 let canvas::Event::Window(window::Event::RedrawRequested(now)) = event else {
                     return None;
                 };
-                if let Some(fps) = state
-                    .tick(*now, self.scene.started)
-                    .filter(|_| self.report_fps)
-                {
+                if let Some(fps) = state.tick(*now, self.scene.started) {
                     Some(canvas::Action::publish(Message::Fps(fps)))
                 } else {
                     Some(canvas::Action::request_redraw())
@@ -317,7 +292,7 @@ macro_rules! drawing {
                 bounds: Rectangle,
                 _cursor: mouse::Cursor,
             ) -> Vec<canvas::Geometry> {
-                let mut frame = canvas::Frame::new(renderer, bounds.size());
+                let mut frame = ($frame)(renderer, bounds.size());
                 let elapsed = state
                     .last_frame
                     .unwrap_or(self.scene.started)
@@ -347,12 +322,25 @@ mod reference {
     use super::*;
     use iced::widget::canvas;
 
-    drawing!();
+    drawing!(canvas::Frame::new);
 }
 
-mod experiment {
+#[cfg(feature = "gpu")]
+mod strips {
     use super::*;
     use iced_vello_canvas as canvas;
 
-    drawing!();
+    drawing!(canvas::Frame::new);
+}
+
+#[cfg(any(feature = "compute", not(feature = "gpu")))]
+mod compute {
+    use super::*;
+    use iced_vello_canvas as canvas;
+
+    drawing!(|renderer, size| canvas::Frame::with_backend(
+        renderer,
+        size,
+        canvas::RendererBackend::Compute
+    ));
 }

@@ -41,23 +41,27 @@ view using `canvas::Canvas::new(program)` or `canvas::canvas(program)`.
 ```sh
 cargo run --locked --example basic
 cargo run --locked --release --example comparison
-cargo run --locked --release --example bezier_fps
+cargo run --locked --release --features compute --example bezier_fps
 ```
 
-The Bézier example starts side by side, with one FPS counter for the shared
-window. Switch between **Iced only** and **Vello only** to measure each renderer
-with the same paths and viewport size. The counter averages redraws over at
-least half a second. Iced uses its antialiasing setting and Vello uses its native
-antialiasing. The example requests VSync off, though your compositor or GPU
-backend may still limit the redraw rate.
+The Bézier example renders one canvas at a time. Switch between **Iced**,
+**Vello GPU**, and **Vello Compute** to measure each renderer with the same
+paths and viewport size. The selector lists the backends enabled in the build.
+The counter averages redraws over at least half a second. Iced uses its
+antialiasing setting and Vello uses its native antialiasing. The example
+requests VSync off, though your compositor or GPU backend may still limit the
+redraw rate.
 
 ## Compatibility
 
 Use Iced 0.14 with its WGPU renderer (wgpu 27). The default `gpu` feature uses
 Vello GPU's sparse-strip renderer and requires a native adapter that supports
-four bind groups. Disable `gpu` to use Vello 0.7's compute renderer, which
-requires compute shaders. On Linux, select `x11` or `wayland`. The default
-features enable `gpu` and `x11`.
+four bind groups. Enable `compute` to make Vello 0.7's area-antialiasing
+compute renderer available alongside it on a compute-capable adapter.
+Select it with `Frame::with_backend(renderer, size, RendererBackend::Compute)`
+or `Cache::with_backend(RendererBackend::Compute)`. Existing constructors
+choose the strip renderer when `gpu` is enabled. Builds without `gpu`
+continue to default to compute. On Linux, select `x11` or `wayland`.
 
 ```sh
 cargo run --locked --no-default-features --features gpu,wayland --example basic

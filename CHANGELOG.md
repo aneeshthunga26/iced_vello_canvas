@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Enable Vello Compute alongside the strip renderer with the `compute` feature.
+- Compare Iced, Vello GPU, and Vello Compute in the Bézier example's single viewport.
 - Preserve stroke-outline reuse during fractional motion and avoid cache churn
   in dense animated scenes.
 - Added a live Bézier curve FPS comparison with side-by-side and solo modes.

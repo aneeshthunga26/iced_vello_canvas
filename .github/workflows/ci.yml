@@ -18,6 +18,6 @@ jobs:
         run: rustup toolchain install stable --profile minimal --component rustfmt
       - run: cargo +stable fmt --all --check
       - run: cargo +stable test --locked
-      - run: cargo +stable check --locked --all-targets
+      - run: cargo +stable check --locked --all-targets --features compute
       - run: cargo +stable test --locked --no-default-features --features x11
       - run: cargo +stable check --locked --all-targets --no-default-features --features gpu,wayland

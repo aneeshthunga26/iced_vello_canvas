@@ -20,6 +20,7 @@ pub use iced::widget::canvas::{
     Fill, Gradient, LineCap, LineJoin, Path, Stroke, Style, Text, fill, path,
 };
 use iced::{Color, Point, Size, wgpu};
+pub use scene::RendererBackend;
 use std::{
     fs,
     time::{Duration, Instant},
@@ -126,7 +127,7 @@ fn main() {
         for count in [128, 512] {
             for repetition in 0..3 {
                 let geometry = fixture(count, stroked);
-                let mut backend = backend::Backend::new(&device, &queue);
+                let mut backend = backend::Backend::default();
                 for i in 0..12 {
                     let start = Instant::now();
                     backend.render(

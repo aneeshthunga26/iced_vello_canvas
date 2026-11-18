@@ -1,56 +1,147 @@
-//! Backend-neutral retained operations that preserve native Vello GPU fast paths.
+//! Backend-specific scene encoding for canvas geometry.
 use std::sync::Arc;
+
 use vello::{
     Glyph,
-    kurbo::{Affine, Rect},
+    kurbo::{Affine, BezPath, Rect, Stroke},
     peniko::{Brush, Color, Fill, FontData},
 };
 
-#[cfg(feature = "gpu")]
-pub(crate) use gpu::Scene;
-#[cfg(not(feature = "gpu"))]
-pub(crate) use vello::Scene;
-
-/// Encodes shaped glyphs using the selected backend while retaining shared font identity.
-pub(crate) fn glyphs(
-    scene: &mut Scene,
-    font: &FontData,
-    size: f32,
-    transform: Affine,
-    color: Color,
-    glyphs: Arc<[Glyph]>,
-) {
-    #[cfg(not(feature = "gpu"))]
-    scene
-        .draw_glyphs(font)
-        .font_size(size)
-        .transform(transform)
-        .brush(color)
-        .draw(vello::peniko::Fill::NonZero, glyphs.iter().copied());
+/// The renderer that rasterizes a canvas frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RendererBackend {
+    /// Vello's strip renderer, which prepares coverage on the CPU.
     #[cfg(feature = "gpu")]
-    scene.glyphs(font, size, transform, color, glyphs);
+    #[default]
+    Gpu,
+    /// Vello's area-antialiasing compute renderer, available with the `compute`
+    /// feature or in builds without the `gpu` feature.
+    #[cfg(any(feature = "compute", not(feature = "gpu")))]
+    #[cfg_attr(not(feature = "gpu"), default)]
+    Compute,
 }
 
-/// Retains a rectangle without converting it into a generic path.
-pub(crate) fn fill_rect(
-    scene: &mut Scene,
-    rule: Fill,
-    transform: Affine,
-    brush: &Brush,
-    rect: Rect,
-) {
-    #[cfg(not(feature = "gpu"))]
-    scene.fill(rule, transform, brush, None, &rect);
+/// A scene encoded directly for its selected renderer.
+pub(crate) enum Scene {
     #[cfg(feature = "gpu")]
-    scene.fill_rect(rule, transform, brush, rect);
+    Gpu(gpu::Scene),
+    #[cfg(any(feature = "compute", not(feature = "gpu")))]
+    Compute(Box<vello::Scene>),
 }
 
-/// Preserves rectangular clipping so native path and glyph rectangle fast paths stay eligible.
-pub(crate) fn clip_rect(scene: &mut Scene, transform: Affine, rect: Rect) {
-    #[cfg(not(feature = "gpu"))]
-    scene.push_clip_layer(Fill::NonZero, transform, &rect);
-    #[cfg(feature = "gpu")]
-    scene.clip_rect(transform, rect);
+impl Scene {
+    /// Starts an empty scene for the selected backend.
+    pub(crate) fn new(backend: RendererBackend) -> Self {
+        match backend {
+            #[cfg(feature = "gpu")]
+            RendererBackend::Gpu => Self::Gpu(gpu::Scene::new()),
+            #[cfg(any(feature = "compute", not(feature = "gpu")))]
+            RendererBackend::Compute => Self::Compute(Box::default()),
+        }
+    }
+
+    /// Identifies the renderer that consumes this scene.
+    pub(crate) fn backend(&self) -> RendererBackend {
+        match self {
+            #[cfg(feature = "gpu")]
+            Self::Gpu(_) => RendererBackend::Gpu,
+            #[cfg(any(feature = "compute", not(feature = "gpu")))]
+            Self::Compute(_) => RendererBackend::Compute,
+        }
+    }
+
+    /// Encodes a filled path.
+    pub(crate) fn fill(&mut self, rule: Fill, transform: Affine, brush: &Brush, path: &BezPath) {
+        match self {
+            #[cfg(feature = "gpu")]
+            Self::Gpu(scene) => scene.fill(rule, transform, brush, path),
+            #[cfg(any(feature = "compute", not(feature = "gpu")))]
+            Self::Compute(scene) => scene.fill(rule, transform, brush, None, path),
+        }
+    }
+
+    /// Encodes a filled rectangle without building a generic path.
+    pub(crate) fn fill_rect(&mut self, rule: Fill, transform: Affine, brush: &Brush, rect: Rect) {
+        match self {
+            #[cfg(feature = "gpu")]
+            Self::Gpu(scene) => scene.fill_rect(rule, transform, brush, rect),
+            #[cfg(any(feature = "compute", not(feature = "gpu")))]
+            Self::Compute(scene) => scene.fill(rule, transform, brush, None, &rect),
+        }
+    }
+
+    /// Encodes a stroke with an independent paint transform.
+    pub(crate) fn stroke(
+        &mut self,
+        stroke: &Stroke,
+        transform: Affine,
+        brush: &Brush,
+        brush_transform: Affine,
+        path: BezPath,
+    ) {
+        match self {
+            #[cfg(feature = "gpu")]
+            Self::Gpu(scene) => scene.stroke(stroke, transform, brush, brush_transform, path),
+            #[cfg(any(feature = "compute", not(feature = "gpu")))]
+            Self::Compute(scene) => {
+                scene.stroke(stroke, transform, brush, Some(brush_transform), &path)
+            }
+        }
+    }
+
+    /// Encodes a shaped glyph run with its retained font.
+    pub(crate) fn glyphs(
+        &mut self,
+        font: &FontData,
+        size: f32,
+        transform: Affine,
+        color: Color,
+        glyphs: Arc<[Glyph]>,
+    ) {
+        match self {
+            #[cfg(feature = "gpu")]
+            Self::Gpu(scene) => scene.glyphs(font, size, transform, color, glyphs),
+            #[cfg(any(feature = "compute", not(feature = "gpu")))]
+            Self::Compute(scene) => scene
+                .draw_glyphs(font)
+                .font_size(size)
+                .transform(transform)
+                .brush(color)
+                .draw(Fill::NonZero, glyphs.iter().copied()),
+        }
+    }
+
+    /// Starts a rectangular clip.
+    pub(crate) fn clip_rect(&mut self, transform: Affine, rect: Rect) {
+        match self {
+            #[cfg(feature = "gpu")]
+            Self::Gpu(scene) => scene.clip_rect(transform, rect),
+            #[cfg(any(feature = "compute", not(feature = "gpu")))]
+            Self::Compute(scene) => scene.push_clip_layer(Fill::NonZero, transform, &rect),
+        }
+    }
+
+    /// Ends the innermost clip.
+    pub(crate) fn pop_layer(&mut self) {
+        match self {
+            #[cfg(feature = "gpu")]
+            Self::Gpu(scene) => scene.pop_layer(),
+            #[cfg(any(feature = "compute", not(feature = "gpu")))]
+            Self::Compute(scene) => scene.pop_layer(),
+        }
+    }
+
+    /// Appends the contents of a child frame encoded for this backend.
+    pub(crate) fn append(&mut self, child: &Self) {
+        match (self, child) {
+            #[cfg(feature = "gpu")]
+            (Self::Gpu(scene), Self::Gpu(child)) => scene.append(child),
+            #[cfg(any(feature = "compute", not(feature = "gpu")))]
+            (Self::Compute(scene), Self::Compute(child)) => scene.append(child, None),
+            #[cfg(all(feature = "compute", feature = "gpu"))]
+            _ => unreachable!("clipped child frames inherit their parent's backend"),
+        }
+    }
 }
 
 #[cfg(feature = "gpu")]
@@ -69,7 +160,7 @@ mod gpu {
         Stroke(BezPath, Affine, Brush, Affine, Stroke),
         Clip(Rect, Affine),
         Pop,
-        Append(Arc<Vec<Command>>, Affine),
+        Append(Arc<Vec<Command>>),
         Glyphs(FontData, f32, Affine, Color, Arc<[Glyph]>),
     }
 
@@ -89,7 +180,6 @@ mod gpu {
             rule: Fill,
             transform: Affine,
             brush: &Brush,
-            _: Option<Affine>,
             path: &BezPath,
         ) {
             if let Some(rect) = rectangle_path(path) {
@@ -109,7 +199,7 @@ mod gpu {
             stroke: &Stroke,
             transform: Affine,
             brush: &Brush,
-            brush_transform: Option<Affine>,
+            brush_transform: Affine,
             path: BezPath,
         ) {
             if let Some(rect) = straight_stroke(&path, stroke) {
@@ -117,7 +207,7 @@ mod gpu {
                     rect,
                     transform,
                     brush.clone(),
-                    brush_transform.unwrap_or(Affine::IDENTITY),
+                    brush_transform,
                     Fill::NonZero,
                 ));
                 return;
@@ -126,7 +216,7 @@ mod gpu {
                 path,
                 transform,
                 brush.clone(),
-                brush_transform.unwrap_or(Affine::IDENTITY),
+                brush_transform,
                 stroke.clone(),
             ));
         }
@@ -155,11 +245,8 @@ mod gpu {
             Arc::make_mut(&mut self.commands).push(Command::Pop);
         }
         /// Appends shared retained commands without copying their paths or glyph arrays.
-        pub(crate) fn append(&mut self, other: &Self, transform: Option<Affine>) {
-            Arc::make_mut(&mut self.commands).push(Command::Append(
-                Arc::clone(&other.commands),
-                transform.unwrap_or(Affine::IDENTITY),
-            ));
+        pub(crate) fn append(&mut self, other: &Self) {
+            Arc::make_mut(&mut self.commands).push(Command::Append(Arc::clone(&other.commands)));
         }
         /// Retains a shaped run for Vello GPU's native glyph frontend.
         pub(crate) fn glyphs(
@@ -304,9 +391,7 @@ mod gpu {
                     target.push_clip_rect(rect);
                 }
                 Command::Pop => target.pop_clip(),
-                Command::Append(commands, transform) => {
-                    replay(commands, target, resources, curves, outer * *transform)
-                }
+                Command::Append(commands) => replay(commands, target, resources, curves, outer),
                 Command::Glyphs(font, size, transform, color, glyphs) => {
                     // Text uses nonzero winding independently of preceding path fills.
                     target.set_fill_rule(Fill::NonZero);

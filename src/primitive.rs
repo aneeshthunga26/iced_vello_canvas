@@ -6,7 +6,7 @@ use vello::kurbo::Affine;
 
 use crate::backend::Backend;
 
-use crate::Geometry;
+use crate::{Geometry, RendererBackend};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Key {
@@ -83,7 +83,10 @@ struct Surface {
 pub(crate) struct Pipeline {
     // Iced requires Sync pipelines. Preparation holds an exclusive reference.
     renderer: Mutex<Backend>,
-    composite: wgpu::RenderPipeline,
+    #[cfg(feature = "gpu")]
+    strip_composite: wgpu::RenderPipeline,
+    #[cfg(any(feature = "compute", not(feature = "gpu")))]
+    compute_composite: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     surfaces: HashMap<Owner, Surface>,
     frame: u64,
@@ -94,8 +97,7 @@ pub(crate) struct Pipeline {
 }
 
 impl shader::Pipeline for Pipeline {
-    fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        let renderer = Backend::new(device, queue);
+    fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Vello canvas texture"),
             entries: &[
@@ -121,49 +123,12 @@ impl shader::Pipeline for Pipeline {
                 },
             ],
         });
-        let source = format!(
-            "const LINEAR_TARGET: bool = {};\nconst SOURCE_PREMULTIPLIED: bool = {};\n{}",
-            iced::advanced::graphics::color::GAMMA_CORRECTION,
-            cfg!(feature = "gpu"),
-            include_str!("composite.wgsl")
-        );
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Vello canvas composite"),
-            source: wgpu::ShaderSource::Wgsl(source.into()),
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Vello canvas composite"),
-            bind_group_layouts: &[&layout],
-            push_constant_ranges: &[],
-        });
-        let composite = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Vello canvas composite"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vertex"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            primitive: Default::default(),
-            depth_stencil: None,
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fragment"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview: None,
-            cache: None,
-        });
         Self {
-            renderer: Mutex::new(renderer),
-            composite,
+            renderer: Mutex::new(Backend::default()),
+            #[cfg(feature = "gpu")]
+            strip_composite: composite(device, format, &layout, true),
+            #[cfg(any(feature = "compute", not(feature = "gpu")))]
+            compute_composite: composite(device, format, &layout, false),
             layout,
             surfaces: HashMap::new(),
             frame: 0,
@@ -378,11 +343,69 @@ impl shader::Primitive for Primitive {
 
     fn draw(&self, pipeline: &Pipeline, pass: &mut wgpu::RenderPass<'_>) -> bool {
         let surface = &pipeline.surfaces[&self.owner];
-        pass.set_pipeline(&pipeline.composite);
+        let backend = self
+            .layers
+            .first()
+            .map_or_else(RendererBackend::default, |layer| layer.scene.backend());
+        let composite = match backend {
+            #[cfg(feature = "gpu")]
+            RendererBackend::Gpu => &pipeline.strip_composite,
+            #[cfg(any(feature = "compute", not(feature = "gpu")))]
+            RendererBackend::Compute => &pipeline.compute_composite,
+        };
+        pass.set_pipeline(composite);
         pass.set_bind_group(0, &surface.binding, &[]);
         pass.draw(0..6, 0..1);
         true
     }
+}
+
+fn composite(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    layout: &wgpu::BindGroupLayout,
+    premultiplied: bool,
+) -> wgpu::RenderPipeline {
+    let source = format!(
+        "const LINEAR_TARGET: bool = {};\nconst SOURCE_PREMULTIPLIED: bool = {};\n{}",
+        iced::advanced::graphics::color::GAMMA_CORRECTION,
+        premultiplied,
+        include_str!("composite.wgsl")
+    );
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Vello canvas composite"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Vello canvas composite"),
+        bind_group_layouts: &[layout],
+        push_constant_ranges: &[],
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Vello canvas composite"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vertex"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: Default::default(),
+        depth_stencil: None,
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fragment"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None,
+        cache: None,
+    })
 }
 
 #[cfg(test)]

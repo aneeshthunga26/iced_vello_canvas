@@ -504,6 +504,66 @@ fn gpu_clip_alpha_text_multiple_scenes_and_dpi() {
     );
 }
 
+#[cfg(all(feature = "gpu", feature = "compute"))]
+#[test]
+#[ignore = "requires a compute-capable GPU; run with --include-ignored"]
+fn gpu_and_compute_geometry_share_a_frame_and_can_replace_each_other() {
+    use crate::RendererBackend;
+
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits: wgpu::Limits {
+            max_bind_groups: 4,
+            max_non_sampler_bindings: 2048,
+            ..Default::default()
+        },
+        ..Default::default()
+    }))
+    .unwrap();
+    let bounds = Rectangle::with_size(Size::new(128.0, 128.0));
+    let viewport = shader::Viewport::with_physical_size(Size::new(128, 128), 1.0);
+    let mut pipeline = Pipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let red = Color::from_rgba(1.0, 0.0, 0.0, 0.5);
+    let blue = Color::from_rgba(0.0, 0.0, 1.0, 0.5);
+    let compute_cache = Cache::with_backend(RendererBackend::Compute);
+    let compute = compute_cache.draw(&(), bounds.size(), |frame| {
+        frame.with_clip(Rectangle::with_size(Size::new(64.0, 128.0)), |frame| {
+            frame.fill_rectangle(Point::ORIGIN, bounds.size(), red);
+        });
+    });
+    let mut gpu = Frame::new(&(), bounds.size());
+    gpu.fill_rectangle(Point::new(64.0, 0.0), Size::new(64.0, 128.0), blue);
+    let gpu = gpu.into_geometry();
+
+    let left = Primitive::layer(0, 0, compute, bounds);
+    let right = Primitive::layer(0, 1, gpu.clone(), bounds);
+    let mut encoder = device.create_command_encoder(&Default::default());
+    for primitive in [&right, &left] {
+        primitive.prepare_with_encoder(
+            &mut pipeline,
+            &device,
+            &queue,
+            &mut encoder,
+            &bounds,
+            &viewport,
+        );
+    }
+    assert_eq!(pipeline.rasters, 2);
+    let pixels = render_recorded(&device, &queue, &pipeline, &[&left, &right], 128, encoder);
+    pipeline.after_submit();
+    assert_pixel(&pixels, 128, 32, 64, [128, 0, 0, 128]);
+    assert_pixel(&pixels, 128, 96, 64, [0, 0, 128, 128]);
+
+    let replacement = Primitive::layer(0, 0, gpu, bounds);
+    replacement.prepare(&mut pipeline, &device, &queue, &bounds, &viewport);
+    let pixels = render(&device, &queue, &pipeline, &[&replacement], 128);
+    assert_eq!(pipeline.rasters, 3);
+    assert_eq!(pipeline.allocations, 2);
+    assert_pixel(&pixels, 128, 32, 64, [0, 0, 0, 0]);
+    assert_pixel(&pixels, 128, 96, 64, [0, 0, 128, 128]);
+}
+
 #[cfg(feature = "gpu")]
 #[test]
 #[ignore = "requires a native GPU; compares cached strokes with the native path pipeline"]

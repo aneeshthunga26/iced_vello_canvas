@@ -13,6 +13,7 @@ categories = ["gui", "rendering::graphics-api"]
 
 [features]
 default = ["gpu", "x11"]
+compute = []
 gpu = ["dep:glifo", "dep:lru", "dep:vello_common", "dep:vello_gpu"]
 x11 = ["iced/x11"]
 wayland = ["iced/wayland"]

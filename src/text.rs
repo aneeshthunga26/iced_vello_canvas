@@ -152,8 +152,7 @@ pub(crate) fn draw(scene: &mut Scene, transform: Affine, value: Text) {
     let transform =
         transform * Affine::translate((f64::from(value.position.x), f64::from(value.position.y)));
     for run in &shaped.runs {
-        crate::scene::glyphs(
-            scene,
+        scene.glyphs(
             &run.font,
             run.size,
             transform,
