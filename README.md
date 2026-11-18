@@ -7,9 +7,6 @@ existing WGPU device. The crate implements a subset of
 
 ![Animated Bézier canvases side by side, with Iced on the left and Vello Compute on the right](https://raw.githubusercontent.com/aneeshthunga26/iced_vello_canvas/main/docs/bezier-comparison.gif)
 
-Both captures show 3,000 curves at the same viewport size. The GIF plays at
-12 FPS and each panel shows the live average FPS from its own run.
-
 ## Getting started
 
 Build the examples from a checkout of this repository. To use the widget in an
