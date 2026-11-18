@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added a live Bézier curve FPS comparison with side-by-side and solo modes.
 - Default to the proof of concept's Vello GPU strip renderer. The compute
   renderer remains available when the `gpu` feature is disabled.
 - Carry the wgpu 27 compatibility port and Iced submission hooks needed by the

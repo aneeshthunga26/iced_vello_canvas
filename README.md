@@ -35,11 +35,21 @@ view using `canvas::Canvas::new(program)` or `canvas::canvas(program)`.
 - [Comparison example](examples/comparison.rs) draws the same scene in Iced
   and Vello. Left-click either canvas to zoom and right-click to change path
   density.
+- [Bézier FPS example](examples/bezier_fps.rs) animates 1,000, 3,000 or 10,000
+  cubic Bézier strokes per canvas.
 
 ```sh
 cargo run --locked --example basic
 cargo run --locked --release --example comparison
+cargo run --locked --release --example bezier_fps
 ```
+
+The Bézier example starts side by side, with one FPS counter for the shared
+window. Switch between **Iced only** and **Vello only** to measure each renderer
+with the same paths and viewport size. The counter averages redraws over at
+least half a second. Iced uses its antialiasing setting and Vello uses its native
+antialiasing. The example requests VSync off, though your compositor or GPU
+backend may still limit the redraw rate.
 
 ## Compatibility
 
