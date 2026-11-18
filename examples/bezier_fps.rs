@@ -7,7 +7,7 @@ use iced::{Alignment, Color, Element, Fill, Point, Rectangle, Renderer, Size, Th
 use iced::{mouse, window};
 
 const COUNTS: [usize; 3] = [1_000, 3_000, 10_000];
-const FPS_SAMPLE: Duration = Duration::from_millis(500);
+const FPS_REFRESH: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
@@ -30,7 +30,7 @@ impl Mode {
 enum Message {
     SelectMode(Mode),
     SelectCount(usize),
-    Fps(f64),
+    Fps(Option<f64>),
 }
 
 struct App {
@@ -74,7 +74,7 @@ impl App {
             Message::SelectMode(mode) if self.mode != mode => self.mode = mode,
             Message::SelectCount(count) if self.count != count => self.count = count,
             Message::Fps(fps) => {
-                self.fps = Some(fps);
+                self.fps = fps;
                 return;
             }
             _ => return,
@@ -86,7 +86,7 @@ impl App {
     fn view(&self) -> Element<'_, Message> {
         let fps = self
             .fps
-            .map_or_else(|| "— FPS".to_owned(), |fps| format!("{fps:.0} FPS"));
+            .map_or_else(|| "— avg FPS".to_owned(), |fps| format!("{fps:.0} avg FPS"));
         let heading = row![
             text("Bézier curves").size(28),
             Space::new().width(Fill),
@@ -205,35 +205,47 @@ struct Scene<'a> {
     started: Instant,
 }
 
+struct FpsMeasurement {
+    viewport: Size,
+    first_frame: Instant,
+    last_report: Instant,
+    frame_intervals: u64,
+}
+
 #[derive(Default)]
 struct Animation {
     last_frame: Option<Instant>,
-    sample_start: Option<Instant>,
-    frame_intervals: u32,
+    measurement: Option<FpsMeasurement>,
 }
 
 impl Animation {
-    fn tick(&mut self, now: Instant, started: Instant) -> Option<f64> {
+    fn tick(&mut self, now: Instant, started: Instant, viewport: Size) -> Option<Message> {
         // Iced can deliver the same redraw timestamp again after a widget message.
         if self.last_frame.replace(now) == Some(now) {
             return None;
         }
 
-        let Some(sample_start) = self.sample_start.filter(|&sample| sample >= started) else {
-            self.sample_start = Some(now);
-            self.frame_intervals = 0;
-            return None;
+        let Some(measurement) = self.measurement.as_mut().filter(|measurement| {
+            measurement.first_frame >= started && measurement.viewport == viewport
+        }) else {
+            self.measurement = Some(FpsMeasurement {
+                viewport,
+                first_frame: now,
+                last_report: now,
+                frame_intervals: 0,
+            });
+            return Some(Message::Fps(None));
         };
 
-        self.frame_intervals += 1;
-        let elapsed = now.saturating_duration_since(sample_start);
-        if elapsed < FPS_SAMPLE {
+        measurement.frame_intervals += 1;
+        if now - measurement.last_report < FPS_REFRESH {
             return None;
         }
-        let fps = f64::from(self.frame_intervals) / elapsed.as_secs_f64();
-        self.sample_start = Some(now);
-        self.frame_intervals = 0;
-        Some(fps)
+        measurement.last_report = now;
+        let elapsed = (now - measurement.first_frame).as_secs_f64();
+        Some(Message::Fps(Some(
+            measurement.frame_intervals as f64 / elapsed,
+        )))
     }
 }
 
@@ -242,7 +254,7 @@ macro_rules! drawing {
     () => {
         /// Draws the shared animation through this module's canvas API.
         pub(super) struct Drawing<'a> {
-            /// The paths and time origin shared by both panels.
+            /// The paths and time origin shared by both renderers.
             pub(super) scene: Scene<'a>,
         }
 
@@ -253,14 +265,14 @@ macro_rules! drawing {
                 &self,
                 state: &mut Animation,
                 event: &canvas::Event,
-                _bounds: Rectangle,
+                bounds: Rectangle,
                 _cursor: mouse::Cursor,
             ) -> Option<canvas::Action<Message>> {
                 let canvas::Event::Window(window::Event::RedrawRequested(now)) = event else {
                     return None;
                 };
-                if let Some(fps) = state.tick(*now, self.scene.started) {
-                    Some(canvas::Action::publish(Message::Fps(fps)))
+                if let Some(message) = state.tick(*now, self.scene.started, bounds.size()) {
+                    Some(canvas::Action::publish(message))
                 } else {
                     Some(canvas::Action::request_redraw())
                 }
@@ -312,4 +324,51 @@ mod compute {
     use iced_vello_canvas as canvas;
 
     drawing!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn averages_all_elapsed_intervals_and_resets_for_a_new_workload() {
+        let mut animation = Animation::default();
+        let start = Instant::now();
+        let size = Size::new(600.0, 400.0);
+        let at = |ms| start + Duration::from_millis(ms);
+
+        assert!(matches!(
+            animation.tick(start, start, size),
+            Some(Message::Fps(None))
+        ));
+        assert!(animation.tick(at(200), start, size).is_none());
+        assert!(matches!(
+            animation.tick(at(600), start, size),
+            Some(Message::Fps(Some(fps))) if (fps - 2.0 / 0.6).abs() < 1e-9
+        ));
+        assert!(animation.tick(at(600), start, size).is_none());
+        assert!(matches!(
+            animation.tick(at(1200), start, size),
+            Some(Message::Fps(Some(fps))) if (fps - 2.5).abs() < 1e-9
+        ));
+
+        let restarted_at = at(1300);
+        assert!(matches!(
+            animation.tick(restarted_at, restarted_at, size),
+            Some(Message::Fps(None))
+        ));
+        assert!(matches!(
+            animation.tick(at(1900), restarted_at, size),
+            Some(Message::Fps(Some(fps))) if (fps - 1.0 / 0.6).abs() < 1e-9
+        ));
+        let new_size = Size::new(800.0, 400.0);
+        assert!(matches!(
+            animation.tick(at(2000), restarted_at, new_size),
+            Some(Message::Fps(None))
+        ));
+        assert!(matches!(
+            animation.tick(at(2500), restarted_at, new_size),
+            Some(Message::Fps(Some(2.0)))
+        ));
+    }
 }

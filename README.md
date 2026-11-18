@@ -40,9 +40,11 @@ cargo run --locked --release --example bezier_fps
 ```
 
 The Bézier example switches between **Iced** and **Vello Compute** in the same
-viewport, using the same animated paths. The counter averages redraws over at
-least half a second. The example requests VSync off, though your compositor or
-GPU backend may still limit the redraw rate.
+viewport, using the same animated paths. **Avg FPS** divides all completed
+redraw intervals by their total elapsed time and refreshes about twice a
+second. Changing the renderer, curve count, or viewport size starts a new
+average. The example requests VSync off, though your compositor or GPU backend
+may still limit the redraw rate.
 
 ## Compatibility
 
