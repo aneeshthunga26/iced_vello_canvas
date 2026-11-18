@@ -1128,6 +1128,7 @@ dependencies = [
  "iced_wgpu",
  "pollster",
  "vello",
+ "vello_encoding",
 ]
 
 [[package]]

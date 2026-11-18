@@ -33,6 +33,83 @@ fn cache_rebuilds_for_resize_and_clear() {
 
 #[test]
 #[ignore = "requires a compute-capable GPU; run with --include-ignored"]
+fn rebuilt_layers_reuse_the_raster_until_pixels_change() {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let adapter =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+            .expect("GPU adapter");
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits: wgpu::Limits {
+            max_bind_groups: 2,
+            max_non_sampler_bindings: 2048,
+            ..Default::default()
+        },
+        ..Default::default()
+    }))
+    .expect("Iced-compatible device");
+    let mut pipeline = Pipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let bounds = Rectangle::with_size(Size::new(128.0, 128.0));
+    let viewport = shader::Viewport::with_physical_size(Size::new(128, 128), 1.0);
+    let overlay = |label: &str, color| {
+        let mut frame = Frame::new(&(), bounds.size());
+        frame.fill_rectangle(Point::new(8.0, 8.0), Size::new(16.0, 16.0), color);
+        frame.fill_text(Text {
+            content: label.into(),
+            position: Point::new(28.0, 32.0),
+            size: 22.0.into(),
+            color: Color::WHITE,
+            ..Default::default()
+        });
+        frame.into_geometry()
+    };
+    let first = overlay("21 cells", Color::WHITE);
+    let repeated = overlay("21 cells", Color::WHITE);
+    assert_ne!(first.id, repeated.id);
+    let first = Primitive::layer(1, 0, first, bounds);
+    first.prepare(&mut pipeline, &device, &queue, &bounds, &viewport);
+    let original = render(&device, &queue, &pipeline, &[&first], 128);
+    let repeated = Primitive::layer(1, 0, repeated, bounds);
+    repeated.prepare(&mut pipeline, &device, &queue, &bounds, &viewport);
+    assert_eq!(pipeline.rasters, 1);
+    assert_eq!(
+        render(&device, &queue, &pipeline, &[&repeated], 128),
+        original
+    );
+
+    let updated = Primitive::layer(1, 0, overlay("22 cells", Color::WHITE), bounds);
+    updated.prepare(&mut pipeline, &device, &queue, &bounds, &viewport);
+    assert_eq!(pipeline.rasters, 2);
+    assert_ne!(
+        render(&device, &queue, &pipeline, &[&updated], 128),
+        original
+    );
+
+    let blue = Primitive::layer(
+        1,
+        0,
+        overlay("22 cells", Color::from_rgb(0.0, 0.0, 1.0)),
+        bounds,
+    );
+    blue.prepare(&mut pipeline, &device, &queue, &bounds, &viewport);
+    assert_eq!(pipeline.rasters, 3);
+    assert_eq!(pipeline.allocations, 1);
+    let pixels = render(&device, &queue, &pipeline, &[&blue], 128);
+    assert_pixel(&pixels, 128, 12, 12, [0, 0, 255, 255]);
+
+    let doubled = shader::Viewport::with_physical_size(Size::new(256, 256), 2.0);
+    let resized = Primitive::layer(
+        1,
+        0,
+        overlay("22 cells", Color::from_rgb(0.0, 0.0, 1.0)),
+        bounds,
+    );
+    resized.prepare(&mut pipeline, &device, &queue, &bounds, &doubled);
+    assert_eq!(pipeline.rasters, 4);
+    assert_eq!(pipeline.allocations, 2);
+}
+
+#[test]
+#[ignore = "requires a compute-capable GPU; run with --include-ignored"]
 fn gpu_clip_alpha_text_multiple_scenes_and_dpi() {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
     let adapter =

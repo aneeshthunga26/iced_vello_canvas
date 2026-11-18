@@ -13,6 +13,7 @@ mod backend;
 mod cache;
 mod frame;
 mod primitive;
+mod scene_eq;
 mod text;
 mod widget;
 

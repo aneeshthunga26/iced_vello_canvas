@@ -22,6 +22,7 @@ wayland = ["iced/wayland"]
 iced = { version = "0.14.0", default-features = false, features = ["advanced", "canvas", "wgpu", "thread-pool"] }
 iced_wgpu = "=0.14.0"
 vello = { version = "=0.7.0", default-features = false, features = ["wgpu"] }
+vello_encoding = "=0.7.0"
 
 [dev-dependencies]
 iced = { version = "0.14.0", default-features = false, features = ["fira-sans"] }

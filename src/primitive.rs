@@ -1,11 +1,14 @@
 //! Shared Vello renderer, retained raster textures and premultiplied composition.
-use std::{collections::HashMap, sync::Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use iced::Size;
 use iced::{Rectangle, wgpu, widget::shader};
-use vello::kurbo::Affine;
+use vello::{Scene, kurbo::Affine};
 
-use crate::{Geometry, backend::Backend};
+use crate::{Geometry, backend::Backend, scene_eq};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Key {
@@ -13,6 +16,14 @@ struct Key {
     logical_bounds: [u32; 4],
     width: u32,
     height: u32,
+}
+
+impl Key {
+    fn same_raster(&self, other: &Self) -> bool {
+        self.logical_bounds == other.logical_bounds
+            && self.width == other.width
+            && self.height == other.height
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -76,6 +87,7 @@ struct Surface {
     mapping_bytes: Vec<u8>,
     last_used: u64,
     key: Key,
+    scene: Option<Arc<Scene>>,
     used: bool,
 }
 
@@ -244,6 +256,12 @@ impl shader::Primitive for Primitive {
             width: (f64::from(raster.width) * scale).ceil().max(1.0) as u32,
             height: (f64::from(raster.height) * scale).ceil().max(1.0) as u32,
         };
+        // Retained regions already have stable identities. Limit content reuse to
+        // ordinary layers that an application may rebuild on every redraw.
+        let scene = match (&self.owner, self.layers.as_slice()) {
+            (Owner::Layer(..), [layer]) => Some(&layer.scene),
+            _ => None,
+        };
         if let Some(surface) = pipeline.surfaces.get_mut(&self.owner) {
             surface.used = true;
             surface.last_used = pipeline.frame;
@@ -252,6 +270,16 @@ impl shader::Primitive for Primitive {
                 surface.mapping_bytes.clone_from(&mapping);
             }
             if surface.key == key {
+                return;
+            }
+            if surface.key.same_raster(&key)
+                && surface
+                    .scene
+                    .as_ref()
+                    .zip(scene)
+                    .is_some_and(|(previous, current)| scene_eq::same(previous, current))
+            {
+                surface.key = key;
                 return;
             }
         }
@@ -309,6 +337,7 @@ impl shader::Primitive for Primitive {
                     mapping_bytes: mapping,
                     last_used: pipeline.frame,
                     key: key.clone(),
+                    scene: None,
                     used: true,
                 },
             );
@@ -338,6 +367,7 @@ impl shader::Primitive for Primitive {
                 Size::new(key.width, key.height),
             );
         surface.key = key;
+        surface.scene = scene.filter(|scene| scene_eq::is_small(scene)).cloned();
         #[cfg(test)]
         {
             pipeline.rasters += 1;
